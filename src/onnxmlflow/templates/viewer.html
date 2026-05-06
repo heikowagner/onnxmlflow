@@ -264,26 +264,37 @@ function collectFeeds() {
 
 // ─── Display inference results ────────────────────────────────────────────────
 
-// Try to read a flat array from an ORT output regardless of type.
+// Read an ORT output tensor into a normalised structure.
 function readOrtData(tensor) {
+  const t = (tensor.type || '').toLowerCase();
+
+  // ORT Web 1.x: sequence output — numeric index keys hold the map elements
+  if (t === 'sequence' || t.startsWith('seq')) {
+    const len = (tensor.dims && tensor.dims[0]) || 1;
+    const items = [];
+    for (let i = 0; i < len; i++) items.push(tensor[i] || {});
+    return { kind: 'sequence', values: items };
+  }
+
+  // ORT Web map output — .value is a JS Map, or the tensor IS the map-like object
+  if (t === 'map') {
+    const v = tensor.value || tensor;
+    const entries = v instanceof Map
+      ? [...v.entries()]
+      : Object.entries(v).filter(([k]) => !isNaN(Number(k)));
+    return { kind: 'probmap', values: entries };
+  }
+
   // Standard tensor: .data is a TypedArray
   try {
     const d = tensor.data;
     if (d && typeof d.length === 'number') {
       return { kind: 'tensor', values: Array.from(d).map(v => typeof v === 'bigint' ? v.toString() : v) };
     }
-  } catch (_) { /* non-tensor type — fall through */ }
+  } catch (_) { /* fall through */ }
 
-  // ORT Web wraps sequence/map outputs in .cpuData or exposes them directly
-  // For Sequence<Map<K,V>> the returned object often has enumerable keys with values.
-  try {
-    const keys = Object.keys(tensor).filter(k => !['type','dims','size'].includes(k));
-    if (keys.length) {
-      const obj = {};
-      keys.forEach(k => { obj[k] = tensor[k]; });
-      return { kind: 'map', values: obj };
-    }
-  } catch (_) { /* ignore */ }
+  // Placeholder for outputs ORT Web couldn't return (sequence/map fallback)
+  if (t === 'skipped') return { kind: 'skipped', values: null };
 
   return { kind: 'unknown', values: null };
 }
@@ -342,23 +353,32 @@ function showResults(results) {
         d.textContent = values.join(', ');
         block.appendChild(d);
       }
-    } else if (kind === 'map' || (outMeta && outMeta.type.startsWith('Sequence'))) {
-      // Sequence-of-maps: iterate directly over tensor object numeric keys
-      const seqLen = tensor.dims ? tensor.dims[0] : 1;
-      for (let i = 0; i < seqLen; i++) {
-        let mapData = tensor[i] || tensor;
-        // mapData is a plain JS object {classKey: prob, ...}
-        const entries = Object.entries(mapData)
-          .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : v])
-          .sort((a, b) => b[1] - a[1]);
-        if (seqLen > 1) {
+    } else if (kind === 'sequence') {
+      // Sequence<Map<K,V>> — each element is a map of class→prob
+      values.forEach((mapItem, i) => {
+        const entries = (mapItem instanceof Map
+          ? [...mapItem.entries()]
+          : Object.entries(mapItem).filter(([k]) => !isNaN(Number(k)))
+        ).map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
+         .sort((a, b) => b[1] - a[1]);
+        if (values.length > 1) {
           const idx = document.createElement('div');
           idx.style.cssText = 'font-size:.8rem;color:#888;margin:.3rem 0 .1rem';
           idx.textContent = `sample ${i}`;
           block.appendChild(idx);
         }
         block.appendChild(buildProbTable(entries));
-      }
+      });
+    } else if (kind === 'probmap') {
+      const entries = values
+        .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
+        .sort((a, b) => b[1] - a[1]);
+      block.appendChild(buildProbTable(entries));
+    } else if (kind === 'skipped') {
+      const d = document.createElement('div');
+      d.style.cssText = 'color:#888;font-size:.85rem;font-style:italic';
+      d.textContent = '(output type not supported by ORT Web — skipped)';
+      block.appendChild(d);
     } else {
       // Fallback: serialise whatever we have
       const d = document.createElement('div');
@@ -408,7 +428,23 @@ runBtn.addEventListener('click', async () => {
   outDiv.className = '';
   document.getElementById('section-outputs').hidden = false;
   try {
-    const results = await session.run(collectFeeds());
+    let results;
+    try {
+      // Try all outputs first
+      results = await session.run(collectFeeds());
+    } catch (e) {
+      if (e.message && e.message.toLowerCase().includes('non-tensor')) {
+        // ORT Web can't return Sequence/Map outputs — fall back to tensor outputs only
+        const tensorNames = OUTPUTS_META.filter(m => m.is_tensor).map(m => m.name);
+        results = await session.run(collectFeeds(), tensorNames);
+        // Add placeholder entries for skipped non-tensor outputs
+        OUTPUTS_META.filter(m => !m.is_tensor).forEach(m => {
+          results[m.name] = { type: 'skipped', data: null, dims: [] };
+        });
+      } else {
+        throw e;
+      }
+    }
     showResults(results);
   } catch (err) {
     outDiv.textContent = 'Error: ' + err.message;
