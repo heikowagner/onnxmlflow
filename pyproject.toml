@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "onnxmlflow"
+version = "0.1.0"
+description = "MLflow extension that logs ONNX models with an interactive in-browser HTML viewer"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "mlflow>=2.0",
+    "onnx>=1.14",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "scikit-learn>=1.2",
+    "skl2onnx>=1.14",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

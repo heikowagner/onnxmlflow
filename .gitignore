@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.onnx
+mlruns/
+.mlflow/
+.pytest_cache/
+.venv/
+venv/
+.env
+*.env
+.DS_Store

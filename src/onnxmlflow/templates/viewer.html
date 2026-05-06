@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ONNX Viewer — __MODEL_NAME__</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 1.2rem 1.6rem;
+      color: #1a1a1a;
+      background: #fafafa;
+    }
+    h1 { font-size: 1.4rem; border-bottom: 2px solid #0078d4; padding-bottom: .4rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.05rem; color: #0078d4; margin: 1.4rem 0 .5rem; }
+    #status { font-size: .9rem; color: #555; margin-bottom: .8rem; min-height: 1.2em; }
+    #status.error { color: #c00; font-weight: 600; }
+
+    /* Info table */
+    table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+    th, td { text-align: left; padding: .3rem .6rem; border: 1px solid #ddd; }
+    th { background: #eef4fb; font-weight: 600; }
+    td code { background: #f0f0f0; padding: .1rem .3rem; border-radius: 3px; font-size: .85rem; }
+
+    /* Input fieldsets */
+    fieldset {
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      margin: .5rem 0;
+      padding: .5rem .9rem .7rem;
+    }
+    legend { font-weight: 600; padding: 0 .3rem; font-size: .95rem; }
+    legend small { font-weight: 400; color: #666; font-size: .8rem; margin-left: .4rem; }
+    .input-row { display: inline-flex; align-items: center; gap: .3rem; margin: .25rem .5rem .25rem 0; }
+    .input-row span { color: #666; font-size: .8rem; min-width: 2.5rem; text-align: right; }
+    input[type="number"], input[type="text"] {
+      width: 9rem;
+      padding: .25rem .4rem;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font-size: .9rem;
+    }
+    input[type="number"]:focus, input[type="text"]:focus {
+      outline: 2px solid #0078d4;
+      border-color: transparent;
+    }
+    input[type="checkbox"] { width: 1.1rem; height: 1.1rem; cursor: pointer; }
+
+    /* Run button */
+    #run-btn {
+      display: block;
+      margin-top: 1.2rem;
+      padding: .55rem 1.6rem;
+      background: #0078d4;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    #run-btn:hover:not(:disabled) { background: #005fa3; }
+    #run-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+    /* Output */
+    pre#output-display {
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: .9rem 1.1rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      font-size: .88rem;
+      min-height: 3rem;
+      margin-top: .5rem;
+    }
+    pre#output-display.error { color: #c00; }
+  </style>
+</head>
+<body>
+
+<h1>ONNX Model Viewer &mdash; <span id="model-name">__MODEL_NAME__</span></h1>
+<div id="status">Initialising…</div>
+
+<section id="section-info" hidden>
+  <h2>Model I/O</h2>
+  <table>
+    <thead>
+      <tr><th>Role</th><th>Name</th><th>ONNX Type</th><th>Shape</th></tr>
+    </thead>
+    <tbody id="info-body"></tbody>
+  </table>
+</section>
+
+<section id="section-inputs" hidden>
+  <h2>Inputs</h2>
+  <form id="inference-form" novalidate></form>
+  <button id="run-btn" disabled>&#9654; Run Inference</button>
+</section>
+
+<section id="section-outputs" hidden>
+  <h2>Outputs</h2>
+  <pre id="output-display">—</pre>
+</section>
+
+<script>
+// ─── Template variables (replaced by html_generator.py at log time) ───────────
+const MODEL_FILENAME    = "__MODEL_FILENAME__";
+const MODEL_ARTIFACT_DIR = "__MODEL_ARTIFACT_DIR__";
+const MODEL_NAME        = "__MODEL_NAME__";
+const INPUTS_META       = __INPUTS_META_JSON__;   // [{name, type, shape}]
+const OUTPUTS_META      = __OUTPUTS_META_JSON__;  // [{name, type, shape}]
+
+// ─── ORT type map (ONNX DataType name → ort.Tensor type string) ───────────────
+const ORT_TYPE = {
+  FLOAT: 'float32', DOUBLE: 'float64',
+  INT8: 'int8',   INT16: 'int16',   INT32: 'int32',   INT64: 'int64',
+  UINT8: 'uint8', UINT16: 'uint16', UINT32: 'uint32', UINT64: 'uint64',
+  BOOL: 'bool',   STRING: 'string',
+};
+
+const TYPED_ARR = {
+  float32: Float32Array, float64: Float64Array,
+  int8: Int8Array,   int16: Int16Array,   int32: Int32Array,
+  uint8: Uint8Array, uint16: Uint16Array, uint32: Uint32Array,
+};
+
+const isBool   = t => t === 'BOOL';
+const isStr    = t => t === 'STRING';
+const isInt64  = t => t === 'INT64' || t === 'UINT64';
+const isFloat  = t => t === 'FLOAT' || t === 'DOUBLE';
+const isIntish = t => !isFloat(t) && !isBool(t) && !isStr(t);
+
+// ─── Shape helpers ─────────────────────────────────────────────────────────────
+// Replace symbolic / unknown dims with 1 for concrete inference
+function resolveShape(shape) {
+  if (!shape || shape.length === 0) return [1];
+  return shape.map(d => (typeof d === 'number' && d > 0) ? d : 1);
+}
+
+function numElems(shape) {
+  return resolveShape(shape).reduce((a, b) => a * b, 1);
+}
+
+function shapeLabel(shape) {
+  if (!shape || shape.length === 0) return 'scalar';
+  return '[' + shape.map(d => d === null ? '?' : d).join(' \xd7 ') + ']';
+}
+
+// ─── MLflow artifact URL construction ─────────────────────────────────────────
+// MLflow serves the HTML at: /get-artifact?path=<dir>/viewer.html&run_uuid=<id>
+// We reconstruct the model URL from the same query params.
+function modelUrl() {
+  const p = new URLSearchParams(window.location.search);
+  const runId = p.get('run_uuid') || p.get('run_id');
+  const path  = MODEL_ARTIFACT_DIR + '/' + MODEL_FILENAME;
+  if (runId) {
+    return (
+      window.location.origin +
+      '/get-artifact?path=' + encodeURIComponent(path) +
+      '&run_uuid=' + encodeURIComponent(runId)
+    );
+  }
+  // Fallback for local file-system testing
+  return MODEL_FILENAME;
+}
+
+// ─── Render model I/O info table ──────────────────────────────────────────────
+function renderInfoTable() {
+  const rows = [
+    ...INPUTS_META.map(m  => ({ role: 'input',  ...m })),
+    ...OUTPUTS_META.map(m => ({ role: 'output', ...m })),
+  ];
+  document.getElementById('info-body').innerHTML = rows.map(r =>
+    `<tr>
+       <td>${r.role}</td>
+       <td><code>${r.name}</code></td>
+       <td>${r.type}</td>
+       <td>${shapeLabel(r.shape)}</td>
+     </tr>`
+  ).join('');
+  document.getElementById('section-info').hidden = false;
+}
+
+// ─── Render input form ─────────────────────────────────────────────────────────
+function renderInputForm() {
+  const form = document.getElementById('inference-form');
+  form.innerHTML = '';
+
+  INPUTS_META.forEach(inp => {
+    const n  = numElems(inp.shape);
+    const fs = document.createElement('fieldset');
+    fs.innerHTML =
+      `<legend><code>${inp.name}</code><small>${inp.type} ${shapeLabel(inp.shape)}</small></legend>`;
+
+    for (let i = 0; i < n; i++) {
+      const id  = `${inp.name}__${i}`;
+      const row = document.createElement('div');
+      row.className = 'input-row';
+
+      if (isBool(inp.type)) {
+        row.innerHTML = `<span>[${i}]</span><input type="checkbox" id="${id}" name="${id}">`;
+      } else if (isStr(inp.type)) {
+        row.innerHTML = `<span>[${i}]</span><input type="text" id="${id}" name="${id}" value="">`;
+      } else {
+        const step = isFloat(inp.type) ? 'any' : '1';
+        row.innerHTML =
+          `<span>[${i}]</span><input type="number" id="${id}" name="${id}" step="${step}" value="0">`;
+      }
+      fs.appendChild(row);
+    }
+    form.appendChild(fs);
+  });
+
+  document.getElementById('section-inputs').hidden = false;
+  document.getElementById('run-btn').disabled = false;
+}
+
+// ─── Collect form values → ORT feed dict ──────────────────────────────────────
+function collectFeeds() {
+  const form  = document.getElementById('inference-form');
+  const feeds = {};
+
+  INPUTS_META.forEach(inp => {
+    const n        = numElems(inp.shape);
+    const shape    = resolveShape(inp.shape);
+    const ortType  = ORT_TYPE[inp.type] || 'float32';
+    const elements = Array.from({ length: n }, (_, i) => form.elements[`${inp.name}__${i}`]);
+
+    let tensor;
+    if (isStr(inp.type)) {
+      tensor = new ort.Tensor('string', elements.map(el => el.value), shape);
+    } else if (isBool(inp.type)) {
+      const data = new Uint8Array(elements.map(el => el.checked ? 1 : 0));
+      tensor = new ort.Tensor('bool', data, shape);
+    } else if (isInt64(inp.type)) {
+      const data = new BigInt64Array(elements.map(el => BigInt(Math.round(parseFloat(el.value) || 0))));
+      tensor = new ort.Tensor(ortType, data, shape);
+    } else {
+      const Arr  = TYPED_ARR[ortType] || Float32Array;
+      const data = new Arr(elements.map(el => parseFloat(el.value) || 0));
+      tensor = new ort.Tensor(ortType, data, shape);
+    }
+    feeds[inp.name] = tensor;
+  });
+
+  return feeds;
+}
+
+// ─── Display inference results ────────────────────────────────────────────────
+function showResults(results) {
+  const lines = [];
+  for (const [name, tensor] of Object.entries(results)) {
+    const vals = Array.from(tensor.data).map(v => typeof v === 'bigint' ? v.toString() : v);
+    lines.push(`${name}  [type: ${tensor.type}  shape: ${JSON.stringify(tensor.dims)}]`);
+    lines.push('  ' + vals.join(', '));
+  }
+  const pre = document.getElementById('output-display');
+  pre.textContent = lines.join('\n');
+  pre.className   = '';
+  document.getElementById('section-outputs').hidden = false;
+}
+
+// ─── Initialisation ───────────────────────────────────────────────────────────
+const statusEl = document.getElementById('status');
+const runBtn   = document.getElementById('run-btn');
+let   session  = null;
+
+async function init() {
+  const url = modelUrl();
+  statusEl.textContent = 'Loading model from ' + url + ' …';
+  try {
+    session = await ort.InferenceSession.create(url);
+    statusEl.textContent = 'Model loaded. Fill in the inputs below and click Run Inference.';
+    renderInfoTable();
+    renderInputForm();
+  } catch (err) {
+    statusEl.textContent = 'Failed to load model: ' + err.message;
+    statusEl.className   = 'error';
+  }
+}
+
+runBtn.addEventListener('click', async () => {
+  runBtn.disabled = true;
+  const pre = document.getElementById('output-display');
+  pre.textContent = 'Running…';
+  pre.className   = '';
+  document.getElementById('section-outputs').hidden = false;
+  try {
+    const results = await session.run(collectFeeds());
+    showResults(results);
+  } catch (err) {
+    pre.textContent = 'Error: ' + err.message;
+    pre.className   = 'error';
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+
+init();
+</script>
+</body>
+</html>
