@@ -266,17 +266,38 @@ function collectFeeds() {
 
 // Read an ORT output tensor into a normalised structure.
 function readOrtData(tensor) {
+  if (!tensor) return { kind: 'unknown', values: null };
+
   const t = (tensor.type || '').toLowerCase();
 
-  // ORT Web 1.x: sequence output — numeric index keys hold the map elements
-  if (t === 'sequence' || t.startsWith('seq')) {
-    const len = (tensor.dims && tensor.dims[0]) || 1;
-    const items = [];
-    for (let i = 0; i < len; i++) items.push(tensor[i] || {});
+  // Placeholder for outputs that couldn't be fetched
+  if (t === 'skipped') return { kind: 'skipped', values: null };
+
+  // ORT Web may return a native JS Array for sequence outputs
+  if (Array.isArray(tensor)) {
+    const items = tensor.map(item =>
+      item instanceof Map ? [...item.entries()] :
+      typeof item === 'object' ? Object.entries(item).filter(([k]) => !isNaN(Number(k))) :
+      [[0, item]]
+    );
     return { kind: 'sequence', values: items };
   }
 
-  // ORT Web map output — .value is a JS Map, or the tensor IS the map-like object
+  // ORT Web sequence type — numeric index keys hold each map element
+  if (t === 'sequence' || t.startsWith('seq')) {
+    const len = (tensor.dims && tensor.dims[0]) ||
+                (tensor.value && tensor.value.length) || 1;
+    const src  = tensor.value || tensor;
+    const items = [];
+    for (let i = 0; i < len; i++) {
+      const el = src[i] || {};
+      items.push(el instanceof Map ? [...el.entries()]
+                                   : Object.entries(el).filter(([k]) => !isNaN(Number(k))));
+    }
+    return { kind: 'sequence', values: items };
+  }
+
+  // ORT Web map type
   if (t === 'map') {
     const v = tensor.value || tensor;
     const entries = v instanceof Map
@@ -292,9 +313,6 @@ function readOrtData(tensor) {
       return { kind: 'tensor', values: Array.from(d).map(v => typeof v === 'bigint' ? v.toString() : v) };
     }
   } catch (_) { /* fall through */ }
-
-  // Placeholder for outputs ORT Web couldn't return (sequence/map fallback)
-  if (t === 'skipped') return { kind: 'skipped', values: null };
 
   return { kind: 'unknown', values: null };
 }
@@ -355,12 +373,10 @@ function showResults(results) {
       }
     } else if (kind === 'sequence') {
       // Sequence<Map<K,V>> — each element is a map of class→prob
-      values.forEach((mapItem, i) => {
-        const entries = (mapItem instanceof Map
-          ? [...mapItem.entries()]
-          : Object.entries(mapItem).filter(([k]) => !isNaN(Number(k)))
-        ).map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
-         .sort((a, b) => b[1] - a[1]);
+      values.forEach((mapEntries, i) => {
+        const entries = mapEntries
+          .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
+          .sort((a, b) => b[1] - a[1]);
         if (values.length > 1) {
           const idx = document.createElement('div');
           idx.style.cssText = 'font-size:.8rem;color:#888;margin:.3rem 0 .1rem';
@@ -434,13 +450,20 @@ runBtn.addEventListener('click', async () => {
       results = await session.run(collectFeeds());
     } catch (e) {
       if (e.message && e.message.toLowerCase().includes('non-tensor')) {
-        // ORT Web can't return Sequence/Map outputs — fall back to tensor outputs only
+        // ORT Web can't return all outputs at once — run tensor outputs first
         const tensorNames = OUTPUTS_META.filter(m => m.is_tensor).map(m => m.name);
-        results = await session.run(collectFeeds(), tensorNames);
-        // Add placeholder entries for skipped non-tensor outputs
-        OUTPUTS_META.filter(m => !m.is_tensor).forEach(m => {
-          results[m.name] = { type: 'skipped', data: null, dims: [] };
-        });
+        results = tensorNames.length
+          ? await session.run(collectFeeds(), tensorNames)
+          : {};
+        // Try each non-tensor output individually
+        for (const m of OUTPUTS_META.filter(mm => !mm.is_tensor)) {
+          try {
+            const r2 = await session.run(collectFeeds(), [m.name]);
+            results[m.name] = r2[m.name];
+          } catch (_) {
+            results[m.name] = { type: 'skipped', data: null, dims: [] };
+          }
+        }
       } else {
         throw e;
       }
