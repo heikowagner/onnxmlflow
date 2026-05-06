@@ -7,6 +7,7 @@ build/
 *.onnx
 mlruns/
 .mlflow/
+*.db
 .pytest_cache/
 .venv/
 venv/
