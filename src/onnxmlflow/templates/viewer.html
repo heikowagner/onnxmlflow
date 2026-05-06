@@ -358,7 +358,14 @@ function showResults(results) {
 
     const { kind, values } = readOrtData(tensor);
 
-    if (kind === 'tensor') {
+    // Heuristic: a FLOAT output with >1 value and a name hinting at probability
+    // is treated as a per-class score table rather than a raw value list.
+    const looksLikeProba = kind === 'tensor'
+      && values.length > 1
+      && values.every(v => !isNaN(parseFloat(v)))
+      && /prob|score|softmax/i.test(name);
+
+    if (kind === 'tensor' && !looksLikeProba) {
       if (values.length === 1) {
         // Scalar result — highlight it
         const d = document.createElement('div');
@@ -371,6 +378,13 @@ function showResults(results) {
         d.textContent = values.join(', ');
         block.appendChild(d);
       }
+    } else if (looksLikeProba) {
+      // Plain FLOAT tensor whose name suggests class probabilities.
+      // Build a class→prob table using class index as label.
+      const entries = values
+        .map((v, i) => [String(i), parseFloat(v)])
+        .sort((a, b) => b[1] - a[1]);
+      block.appendChild(buildProbTable(entries));
     } else if (kind === 'sequence') {
       // Sequence<Map<K,V>> — each element is a map of class→prob
       values.forEach((mapEntries, i) => {
@@ -444,30 +458,8 @@ runBtn.addEventListener('click', async () => {
   outDiv.className = '';
   document.getElementById('section-outputs').hidden = false;
   try {
-    let results;
-    try {
-      // Try all outputs first
-      results = await session.run(collectFeeds());
-    } catch (e) {
-      if (e.message && e.message.toLowerCase().includes('non-tensor')) {
-        // ORT Web can't return all outputs at once — run tensor outputs first
-        const tensorNames = OUTPUTS_META.filter(m => m.is_tensor).map(m => m.name);
-        results = tensorNames.length
-          ? await session.run(collectFeeds(), tensorNames)
-          : {};
-        // Try each non-tensor output individually
-        for (const m of OUTPUTS_META.filter(mm => !mm.is_tensor)) {
-          try {
-            const r2 = await session.run(collectFeeds(), [m.name]);
-            results[m.name] = r2[m.name];
-          } catch (_) {
-            results[m.name] = { type: 'skipped', data: null, dims: [] };
-          }
-        }
-      } else {
-        throw e;
-      }
-    }
+    // The embedded model has ZipMap removed — all outputs are plain tensors.
+    const results = await session.run(collectFeeds());
     showResults(results);
   } catch (err) {
     outDiv.textContent = 'Error: ' + err.message;

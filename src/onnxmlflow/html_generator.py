@@ -8,6 +8,8 @@ from typing import Any
 import onnx
 from onnx import TensorProto
 
+from .model_utils import make_viewer_model
+
 # Reverse mapping: integer element-type code → ONNX DataType name string
 # e.g. {1: 'FLOAT', 7: 'INT64', 8: 'STRING', ...}
 _ELEM_TYPE_NAME: dict[int, str] = {v: k for k, v in TensorProto.DataType.items()}
@@ -59,17 +61,15 @@ def generate_viewer_html(
     model_path: str = "",
 ) -> str:
     """Render the HTML viewer template with model metadata injected in-place."""
-    inputs_meta = _extract_tensor_meta(model.graph.input)
-    outputs_meta = _extract_tensor_meta(model.graph.output)
-    model_name = model.graph.name or os.path.splitext(model_filename)[0]
+    # Patch the model for the viewer: remove ZipMap so ORT Web gets plain tensors.
+    viewer_model = make_viewer_model(model)
 
-    # Embed model as base64 so the viewer works inside MLflow's sandboxed iframe
-    # without needing a fetch() call.
-    if model_path and os.path.isfile(model_path):
-        with open(model_path, "rb") as fh:
-            model_b64 = base64.b64encode(fh.read()).decode("ascii")
-    else:
-        model_b64 = base64.b64encode(model.SerializeToString()).decode("ascii")
+    inputs_meta  = _extract_tensor_meta(viewer_model.graph.input)
+    outputs_meta = _extract_tensor_meta(viewer_model.graph.output)
+    model_name   = viewer_model.graph.name or os.path.splitext(model_filename)[0]
+
+    # Embed the PATCHED model as base64 — no ZipMap, all outputs are plain tensors.
+    model_b64 = base64.b64encode(viewer_model.SerializeToString()).decode("ascii")
 
     with open(_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
         template = fh.read()

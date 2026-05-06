@@ -62,7 +62,6 @@ def log_model(
     html_content = generate_viewer_html(
         model, stable_filename, artifact_dir,
         run_id=resolved_run_id,
-        model_path=model_path,
     )
 
     client = mlflow.tracking.MlflowClient()
