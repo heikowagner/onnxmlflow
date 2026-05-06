@@ -15,24 +15,39 @@ _ELEM_TYPE_NAME: dict[int, str] = {v: k for k, v in TensorProto.DataType.items()
 _TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "templates", "viewer.html")
 
 
+def _type_description(type_proto) -> tuple[str, bool]:
+    """Return (human-readable type string, is_plain_tensor).
+
+    is_plain_tensor=False signals that tensor.data should NOT be used in JS.
+    """
+    if type_proto.HasField("tensor_type"):
+        name = _ELEM_TYPE_NAME.get(type_proto.tensor_type.elem_type, "FLOAT")
+        return name, True
+    if type_proto.HasField("sequence_type"):
+        inner, _ = _type_description(type_proto.sequence_type.elem_type)
+        return f"Sequence<{inner}>", False
+    if type_proto.HasField("map_type"):
+        key = _ELEM_TYPE_NAME.get(type_proto.map_type.key_type, "?")
+        val, _ = _type_description(type_proto.map_type.value_type)
+        return f"Map<{key},{val}>", False
+    return "unknown", False
+
+
 def _extract_tensor_meta(value_info_list) -> list[dict[str, Any]]:
-    """Return [{name, type, shape}] for a list of ValueInfoProto entries."""
+    """Return [{name, type, shape, is_tensor}] for a list of ValueInfoProto entries."""
     result: list[dict[str, Any]] = []
     for vi in value_info_list:
-        entry: dict[str, Any] = {"name": vi.name, "type": "FLOAT", "shape": []}
-        t = vi.type
-        if t.HasField("tensor_type"):
-            entry["type"] = _ELEM_TYPE_NAME.get(t.tensor_type.elem_type, "FLOAT")
-            if t.tensor_type.HasField("shape"):
-                for dim in t.tensor_type.shape.dim:
-                    if dim.HasField("dim_value"):
-                        entry["shape"].append(dim.dim_value)
-                    elif dim.HasField("dim_param"):
-                        # symbolic dim like "batch_size" → keep as string
-                        entry["shape"].append(dim.dim_param)
-                    else:
-                        entry["shape"].append(None)
-        result.append(entry)
+        type_str, is_tensor = _type_description(vi.type)
+        shape: list = []
+        if vi.type.HasField("tensor_type") and vi.type.tensor_type.HasField("shape"):
+            for dim in vi.type.tensor_type.shape.dim:
+                if dim.HasField("dim_value"):
+                    shape.append(dim.dim_value)
+                elif dim.HasField("dim_param"):
+                    shape.append(dim.dim_param)
+                else:
+                    shape.append(None)
+        result.append({"name": vi.name, "type": type_str, "shape": shape, "is_tensor": is_tensor})
     return result
 
 
