@@ -39,6 +39,7 @@ def generate_viewer_html(
     model: onnx.ModelProto,
     model_filename: str,
     artifact_dir: str,
+    run_id: str = "",
 ) -> str:
     """Render the HTML viewer template with model metadata injected in-place."""
     inputs_meta = _extract_tensor_meta(model.graph.input)
@@ -53,6 +54,7 @@ def generate_viewer_html(
         .replace("__MODEL_FILENAME__", model_filename)
         .replace("__MODEL_ARTIFACT_DIR__", artifact_dir)
         .replace("__MODEL_NAME__", model_name)
+        .replace("__RUN_ID__", run_id)
         .replace("__INPUTS_META_JSON__", json.dumps(inputs_meta))
         .replace("__OUTPUTS_META_JSON__", json.dumps(outputs_meta))
     )

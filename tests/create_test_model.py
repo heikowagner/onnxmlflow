@@ -39,7 +39,7 @@ def create_iris_model(output_path: str = "tests/fixtures/iris_classifier.onnx") 
         iris.data, iris.target, test_size=0.2, random_state=42
     )
 
-    clf = LogisticRegression(max_iter=500, multi_class="ovr")
+    clf = LogisticRegression(max_iter=500)
     clf.fit(X_train, y_train)
 
     initial_types = [("float_input", FloatTensorType([None, X_train.shape[1]]))]

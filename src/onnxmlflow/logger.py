@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from typing import Optional
 
@@ -47,7 +48,6 @@ def log_model(
     onnx.checker.check_model(model)
 
     model_filename = os.path.basename(model_path)
-    html_content = generate_viewer_html(model, model_filename, artifact_dir)
 
     active_run = mlflow.active_run()
     resolved_run_id = run_id or (active_run.info.run_id if active_run else None)
@@ -57,13 +57,23 @@ def log_model(
             "`with mlflow.start_run():` block or pass run_id explicitly."
         )
 
+    # Use a stable filename (model stem + .onnx) so the viewer URL is predictable.
+    stable_filename = os.path.splitext(os.path.basename(model_path))[0] + ".onnx"
+    html_content = generate_viewer_html(
+        model, stable_filename, artifact_dir, run_id=resolved_run_id
+    )
+
     client = mlflow.tracking.MlflowClient()
     with tempfile.TemporaryDirectory() as tmp:
         html_path = os.path.join(tmp, "viewer.html")
         with open(html_path, "w", encoding="utf-8") as fh:
             fh.write(html_content)
 
-        client.log_artifact(resolved_run_id, model_path, artifact_path=artifact_dir)
+        # Copy model to stable filename so the artifact name matches the HTML
+        stable_model_path = os.path.join(tmp, stable_filename)
+        shutil.copy2(model_path, stable_model_path)
+
+        client.log_artifact(resolved_run_id, stable_model_path, artifact_path=artifact_dir)
         client.log_artifact(resolved_run_id, html_path, artifact_path=artifact_dir)
 
     return f"{artifact_dir}/viewer.html"

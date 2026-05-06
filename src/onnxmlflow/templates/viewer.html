@@ -112,6 +112,7 @@
 const MODEL_FILENAME    = "__MODEL_FILENAME__";
 const MODEL_ARTIFACT_DIR = "__MODEL_ARTIFACT_DIR__";
 const MODEL_NAME        = "__MODEL_NAME__";
+const RUN_ID            = "__RUN_ID__";           // embedded at log time
 const INPUTS_META       = __INPUTS_META_JSON__;   // [{name, type, shape}]
 const OUTPUTS_META      = __OUTPUTS_META_JSON__;  // [{name, type, shape}]
 
@@ -152,12 +153,12 @@ function shapeLabel(shape) {
 }
 
 // ─── MLflow artifact URL construction ─────────────────────────────────────────
-// MLflow serves the HTML at: /get-artifact?path=<dir>/viewer.html&run_uuid=<id>
-// We reconstruct the model URL from the same query params.
+// RUN_ID is embedded at log time. Also try URL params as fallback.
 function modelUrl() {
-  const p = new URLSearchParams(window.location.search);
-  const runId = p.get('run_uuid') || p.get('run_id');
   const path  = MODEL_ARTIFACT_DIR + '/' + MODEL_FILENAME;
+  const runId = RUN_ID
+    || new URLSearchParams(window.location.search).get('run_uuid')
+    || new URLSearchParams(window.location.search).get('run_id');
   if (runId) {
     return (
       window.location.origin +
@@ -165,7 +166,7 @@ function modelUrl() {
       '&run_uuid=' + encodeURIComponent(runId)
     );
   }
-  // Fallback for local file-system testing
+  // Last-resort fallback for direct file-system opening
   return MODEL_FILENAME;
 }
 
