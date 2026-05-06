@@ -113,6 +113,7 @@ const MODEL_FILENAME    = "__MODEL_FILENAME__";
 const MODEL_ARTIFACT_DIR = "__MODEL_ARTIFACT_DIR__";
 const MODEL_NAME        = "__MODEL_NAME__";
 const RUN_ID            = "__RUN_ID__";           // embedded at log time
+const MODEL_B64         = "__MODEL_B64__";        // base64-encoded .onnx bytes
 const INPUTS_META       = __INPUTS_META_JSON__;   // [{name, type, shape}]
 const OUTPUTS_META      = __OUTPUTS_META_JSON__;  // [{name, type, shape}]
 
@@ -271,11 +272,19 @@ const statusEl = document.getElementById('status');
 const runBtn   = document.getElementById('run-btn');
 let   session  = null;
 
+// Decode base64 model bytes embedded at log time and create an ORT session.
+// This works inside MLflow's sandboxed iframe without any network fetch.
+function modelBytes() {
+  const binary = atob(MODEL_B64);
+  const bytes  = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 async function init() {
-  const url = modelUrl();
-  statusEl.textContent = 'Loading model from ' + url + ' …';
+  statusEl.textContent = 'Loading model…';
   try {
-    session = await ort.InferenceSession.create(url);
+    session = await ort.InferenceSession.create(modelBytes());
     statusEl.textContent = 'Model loaded. Fill in the inputs below and click Run Inference.';
     renderInfoTable();
     renderInputForm();

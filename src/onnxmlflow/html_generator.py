@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from typing import Any
@@ -40,11 +41,20 @@ def generate_viewer_html(
     model_filename: str,
     artifact_dir: str,
     run_id: str = "",
+    model_path: str = "",
 ) -> str:
     """Render the HTML viewer template with model metadata injected in-place."""
     inputs_meta = _extract_tensor_meta(model.graph.input)
     outputs_meta = _extract_tensor_meta(model.graph.output)
     model_name = model.graph.name or os.path.splitext(model_filename)[0]
+
+    # Embed model as base64 so the viewer works inside MLflow's sandboxed iframe
+    # without needing a fetch() call.
+    if model_path and os.path.isfile(model_path):
+        with open(model_path, "rb") as fh:
+            model_b64 = base64.b64encode(fh.read()).decode("ascii")
+    else:
+        model_b64 = base64.b64encode(model.SerializeToString()).decode("ascii")
 
     with open(_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
         template = fh.read()
@@ -55,6 +65,7 @@ def generate_viewer_html(
         .replace("__MODEL_ARTIFACT_DIR__", artifact_dir)
         .replace("__MODEL_NAME__", model_name)
         .replace("__RUN_ID__", run_id)
+        .replace("__MODEL_B64__", model_b64)
         .replace("__INPUTS_META_JSON__", json.dumps(inputs_meta))
         .replace("__OUTPUTS_META_JSON__", json.dumps(outputs_meta))
     )

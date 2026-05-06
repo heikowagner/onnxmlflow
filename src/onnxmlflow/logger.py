@@ -60,7 +60,9 @@ def log_model(
     # Use a stable filename (model stem + .onnx) so the viewer URL is predictable.
     stable_filename = os.path.splitext(os.path.basename(model_path))[0] + ".onnx"
     html_content = generate_viewer_html(
-        model, stable_filename, artifact_dir, run_id=resolved_run_id
+        model, stable_filename, artifact_dir,
+        run_id=resolved_run_id,
+        model_path=model_path,
     )
 
     client = mlflow.tracking.MlflowClient()
