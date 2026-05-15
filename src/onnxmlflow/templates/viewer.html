@@ -411,85 +411,132 @@ function buildProbTable(entries) {
   return tbl;
 }
 
+function renderOutputBlock(name, tensor) {
+  const outMeta = OUTPUTS_META.find(m => m.name === name);
+  const block = document.createElement('div');
+  block.className = 'out-block';
+
+  const nameDiv = document.createElement('div');
+  nameDiv.className = 'out-name';
+  nameDiv.innerHTML = `<code>${name}</code><small>${outMeta ? outMeta.type : tensor.type}</small>`;
+  block.appendChild(nameDiv);
+
+  const { kind, values } = readOrtData(tensor);
+
+  const looksLikeProba = kind === 'tensor'
+    && values.length > 1
+    && values.every(v => !isNaN(parseFloat(v)))
+    && /prob|score|softmax/i.test(name);
+
+  if (kind === 'tensor' && !looksLikeProba) {
+    if (values.length === 1) {
+      const d = document.createElement('div');
+      d.className = 'out-scalar';
+      d.textContent = values[0];
+      block.appendChild(d);
+    } else {
+      const d = document.createElement('div');
+      d.className = 'out-values';
+      d.textContent = values.join(', ');
+      block.appendChild(d);
+    }
+  } else if (looksLikeProba) {
+    const entries = values
+      .map((v, i) => [String(i), parseFloat(v)])
+      .sort((a, b) => b[1] - a[1]);
+    block.appendChild(buildProbTable(entries));
+  } else if (kind === 'sequence') {
+    values.forEach((mapEntries, i) => {
+      const entries = mapEntries
+        .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
+        .sort((a, b) => b[1] - a[1]);
+      if (values.length > 1) {
+        const idx = document.createElement('div');
+        idx.style.cssText = 'font-size:.8rem;color:#888;margin:.3rem 0 .1rem';
+        idx.textContent = `sample ${i}`;
+        block.appendChild(idx);
+      }
+      block.appendChild(buildProbTable(entries));
+    });
+  } else if (kind === 'probmap') {
+    const entries = values
+      .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
+      .sort((a, b) => b[1] - a[1]);
+    block.appendChild(buildProbTable(entries));
+  } else if (kind === 'skipped') {
+    const d = document.createElement('div');
+    d.style.cssText = 'color:#888;font-size:.85rem;font-style:italic';
+    d.textContent = '(output type not supported by ORT Web — skipped)';
+    block.appendChild(d);
+  } else {
+    const d = document.createElement('div');
+    d.className = 'out-values';
+    try { d.textContent = JSON.stringify(tensor, null, 2); }
+    catch (_) { d.textContent = '(cannot display output)'; }
+    block.appendChild(d);
+  }
+  return block;
+}
+
+// Build a flat map: outputName → group label path (first-match-wins, same as graph).
+function _buildOutputGroupMap() {
+  const map = {}; // name → groupLabel (top-level label only, for display)
+  function walk(obj, topLabel) {
+    for (const [label, val] of Object.entries(obj)) {
+      const grp = topLabel || label;
+      if (Array.isArray(val)) {
+        val.forEach(pat => {
+          OUTPUTS_META.forEach(m => {
+            if (!(m.name in map) && matchesPattern(m.name, pat)) map[m.name] = grp;
+          });
+        });
+      } else {
+        walk(val, grp);
+      }
+    }
+  }
+  walk(GRAPH_OUTPUT_GROUPS, null);
+  return map;
+}
+
 function showResults(results) {
   const container = document.getElementById('output-display');
   container.innerHTML = '';
   container.className = '';
 
+  const groupMap = _buildOutputGroupMap(); // name → groupLabel
+  const groupOrder = []; // preserve insertion order
+  const grouped = {};   // groupLabel → [{name, tensor}]
+  const ungrouped = [];
+
   for (const [name, tensor] of Object.entries(results)) {
-    const outMeta = OUTPUTS_META.find(m => m.name === name);
-    const block = document.createElement('div');
-    block.className = 'out-block';
-
-    const nameDiv = document.createElement('div');
-    nameDiv.className = 'out-name';
-    nameDiv.innerHTML = `<code>${name}</code><small>${outMeta ? outMeta.type : tensor.type}</small>`;
-    block.appendChild(nameDiv);
-
-    const { kind, values } = readOrtData(tensor);
-
-    // Heuristic: a FLOAT output with >1 value and a name hinting at probability
-    // is treated as a per-class score table rather than a raw value list.
-    const looksLikeProba = kind === 'tensor'
-      && values.length > 1
-      && values.every(v => !isNaN(parseFloat(v)))
-      && /prob|score|softmax/i.test(name);
-
-    if (kind === 'tensor' && !looksLikeProba) {
-      if (values.length === 1) {
-        // Scalar result — highlight it
-        const d = document.createElement('div');
-        d.className = 'out-scalar';
-        d.textContent = values[0];
-        block.appendChild(d);
-      } else {
-        const d = document.createElement('div');
-        d.className = 'out-values';
-        d.textContent = values.join(', ');
-        block.appendChild(d);
-      }
-    } else if (looksLikeProba) {
-      // Plain FLOAT tensor whose name suggests class probabilities.
-      // Build a class→prob table using class index as label.
-      const entries = values
-        .map((v, i) => [String(i), parseFloat(v)])
-        .sort((a, b) => b[1] - a[1]);
-      block.appendChild(buildProbTable(entries));
-    } else if (kind === 'sequence') {
-      // Sequence<Map<K,V>> — each element is a map of class→prob
-      values.forEach((mapEntries, i) => {
-        const entries = mapEntries
-          .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
-          .sort((a, b) => b[1] - a[1]);
-        if (values.length > 1) {
-          const idx = document.createElement('div');
-          idx.style.cssText = 'font-size:.8rem;color:#888;margin:.3rem 0 .1rem';
-          idx.textContent = `sample ${i}`;
-          block.appendChild(idx);
-        }
-        block.appendChild(buildProbTable(entries));
-      });
-    } else if (kind === 'probmap') {
-      const entries = values
-        .map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : Number(v)])
-        .sort((a, b) => b[1] - a[1]);
-      block.appendChild(buildProbTable(entries));
-    } else if (kind === 'skipped') {
-      const d = document.createElement('div');
-      d.style.cssText = 'color:#888;font-size:.85rem;font-style:italic';
-      d.textContent = '(output type not supported by ORT Web — skipped)';
-      block.appendChild(d);
+    const grp = groupMap[name];
+    if (grp) {
+      if (!grouped[grp]) { grouped[grp] = []; groupOrder.push(grp); }
+      grouped[grp].push({ name, tensor });
     } else {
-      // Fallback: serialise whatever we have
-      const d = document.createElement('div');
-      d.className = 'out-values';
-      try { d.textContent = JSON.stringify(tensor, null, 2); }
-      catch (_) { d.textContent = '(cannot display output)'; }
-      block.appendChild(d);
+      ungrouped.push({ name, tensor });
     }
-
-    container.appendChild(block);
   }
+
+  // Render grouped outputs inside collapsible <details>.
+  groupOrder.forEach(grp => {
+    const details = document.createElement('details');
+    details.open = true;
+    details.style.cssText = 'margin-bottom:.6rem;border:1px solid #bee3f8;border-radius:5px;background:#f0f9ff';
+    const summary = document.createElement('summary');
+    summary.style.cssText = 'cursor:pointer;padding:.35rem .7rem;font-weight:600;font-size:.95rem;color:#0369a1;user-select:none';
+    summary.textContent = grp;
+    details.appendChild(summary);
+    const inner = document.createElement('div');
+    inner.style.cssText = 'padding:.1rem .5rem .4rem';
+    grouped[grp].forEach(({ name, tensor }) => inner.appendChild(renderOutputBlock(name, tensor)));
+    details.appendChild(inner);
+    container.appendChild(details);
+  });
+
+  // Remaining ungrouped outputs.
+  ungrouped.forEach(({ name, tensor }) => container.appendChild(renderOutputBlock(name, tensor)));
 
   document.getElementById('section-outputs').hidden = false;
 }
@@ -602,6 +649,13 @@ function xmlEsc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Match a string against a pattern where * is a wildcard for any chars.
+function matchesPattern(str, pattern) {
+  if (!str) return false;
+  const re = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+  return re.test(str);
+}
+
 // Track which groups are currently expanded (their label strings).
 const expandedGroups = new Set();
 const expandedOutputGroups = new Set();
@@ -686,12 +740,6 @@ function renderOnnxGraph() {
     // GRAPH_GROUPS: { label: [...] | { label: [...] | {...} } }
     // nodeToPath[i] = ['TopGroup', 'SubGroup', ...] (full path to deepest group)
 
-    // Match a string against a pattern where * is a wildcard for any chars.
-    function matchesPattern(str, pattern) {
-      if (!str) return false;
-      const re = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
-      return re.test(str);
-    }
     function nodeMatchesMember(n, member) {
       // Match by node name, op type, or any of its output tensor names.
       // Output tensor names are the only guaranteed-unique node identifier in ONNX.
