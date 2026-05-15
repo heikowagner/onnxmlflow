@@ -173,6 +173,7 @@ def generate_viewer_html(
     run_id: str = "",
     model_path: str = "",
     groups: dict | None = None,
+    output_groups: dict | None = None,
 ) -> str:
     """Render the HTML viewer template with model metadata injected in-place."""
     # Patch the model for the viewer: remove ZipMap so ORT Web gets plain tensors.
@@ -290,6 +291,7 @@ def generate_viewer_html(
         .replace("__OUTPUTS_META_JSON__", json.dumps(outputs_meta))
         .replace("__GRAPH_NODES_JSON__", json.dumps(graph_nodes))
         .replace("__GRAPH_GROUPS_JSON__", json.dumps(groups or {}))
+        .replace("__GRAPH_OUTPUT_GROUPS_JSON__", json.dumps(output_groups or {}))
         .replace("__SCORED_MODEL_B64__", scored_model_b64)
         .replace("__INITIAL_TENSOR_VALUES_JSON__", json.dumps(initial_tensor_values))
     )

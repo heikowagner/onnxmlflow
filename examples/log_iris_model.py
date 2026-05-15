@@ -34,6 +34,9 @@ def main() -> None:
                         "Classifier":    ["Linear*", "Cast"],
                     },
                 },
+                output_groups={
+                    "Predictions": ["label", "probabilities"],
+                },
             )
             run_id = run.info.run_id
 

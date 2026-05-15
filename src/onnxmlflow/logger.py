@@ -16,6 +16,7 @@ def log_model(
     artifact_dir: str = "onnx_viewer",
     run_id: Optional[str] = None,
     groups: Optional[dict] = None,
+    output_groups: Optional[dict] = None,
 ) -> str:
     """Log an ONNX model to MLflow together with an interactive HTML viewer.
 
@@ -29,12 +30,12 @@ def log_model(
     run_id:
         Target MLflow run ID.  When *None* the currently active run is used.
     groups:
-        Optional grouping for the graph visualisation.  A dict mapping a group
-        label to a list of node names **or** op-type strings.  Nodes matching
-        any entry in the list are collapsed into a single expandable group node
-        in the graph.  Example::
+        Optional grouping for op nodes.  Nested dict mapping group labels to
+        lists of node names / op-type strings (wildcards supported, e.g. ``"*Norm*"``).
+    output_groups:
+        Same structure as *groups* but matches output tensor names, e.g.::
 
-            groups={"Preprocessing": ["Normalizer"], "Classifier": ["LinearClassifier", "Softmax"]}
+            output_groups={"Predictions": ["label", "output_*"]}
 
     Returns
     -------
@@ -71,6 +72,7 @@ def log_model(
         model, stable_filename, artifact_dir,
         run_id=resolved_run_id,
         groups=groups or {},
+        output_groups=output_groups or {},
     )
 
     client = mlflow.tracking.MlflowClient()
