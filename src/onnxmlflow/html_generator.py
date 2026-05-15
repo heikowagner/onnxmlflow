@@ -225,11 +225,14 @@ def generate_viewer_html(
                 all_floats[inp] = arr.astype(np.float32)
 
 
+
+
+
         # 2. Alle Attribute als params aufnehmen (auch String, Int, Maps, Constant)
         for attr in n.attribute:
             try:
                 if attr.type == AttributeProto.FLOATS and len(attr.floats) > 0:
-                    params.append(f"{attr.name}: [{', '.join(f'{v:.3f}' for v in attr.floats)}]")
+                    all_floats[attr.name] = np.array(list(attr.floats), dtype=np.float32)
                 elif attr.type == AttributeProto.INTS and len(attr.ints) > 0:
                     params.append(f"{attr.name}: [{', '.join(str(v) for v in attr.ints)}]")
                 elif attr.type == AttributeProto.STRINGS and len(attr.strings) > 0:
