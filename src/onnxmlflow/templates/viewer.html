@@ -111,6 +111,8 @@
     }
     details[open] > summary.graph-summary::before { transform: rotate(90deg); }
     #graph-container { overflow: auto; max-height: 480px; }
+    #svg-tip { position:fixed; background:#1e1e1e; color:#eee; font:12px/1.6 monospace,monospace; padding:.4rem .65rem; border-radius:5px; box-shadow:0 2px 10px rgba(0,0,0,.4); white-space:pre; pointer-events:none; z-index:9999; max-width:440px; display:none; }
+    #svg-tip { position:fixed; background:#1e1e1e; color:#eee; font:12px/1.5 monospace,monospace; padding:.4rem .6rem; border-radius:5px; box-shadow:0 2px 8px rgba(0,0,0,.35); white-space:pre; pointer-events:none; z-index:9999; max-width:420px; display:none; }
   </style>
 </head>
 <body>
@@ -131,6 +133,8 @@
 <section id="section-graph" hidden>
   <details id="graph-details">
     <summary class="graph-summary">Graph Visualization</summary>
+    <div id="svg-tip"></div>
+    <div id="svg-tip"></div>
     <div id="graph-container" style="border:1px solid #ddd;border-radius:6px;background:#fff;margin-top:.4rem;min-height:2.5rem">
       <p style="padding:.7rem 1rem;color:#888;font-size:.88rem;margin:0">Click to render…</p>
     </div>
@@ -158,6 +162,8 @@ const MODEL_B64         = "__MODEL_B64__";        // base64-encoded .onnx bytes
 const INPUTS_META       = __INPUTS_META_JSON__;   // [{name, type, shape}]
 const OUTPUTS_META      = __OUTPUTS_META_JSON__;  // [{name, type, shape}]
 const GRAPH_NODES       = __GRAPH_NODES_JSON__;   // [{opType, name, inputs, outputs}]
+const SCORED_MODEL_B64  = "__SCORED_MODEL_B64__"; // model with all intermediate outputs exposed
+const INITIAL_TENSOR_VALUES = __INITIAL_TENSOR_VALUES_JSON__; // pre-computed with zero input
 
 // ─── ORT type map (ONNX DataType name → ort.Tensor type string) ───────────────
 const ORT_TYPE = {
@@ -460,15 +466,40 @@ function showResults(results) {
 // ─── Initialisation ───────────────────────────────────────────────────────────
 const statusEl = document.getElementById('status');
 const runBtn   = document.getElementById('run-btn');
-let   session  = null;
+let   session       = null;
+let   scoredSession = null;
+let   tensorValues  = Object.assign({}, INITIAL_TENSOR_VALUES);  // pre-filled from Python; updated after browser inference
 
-// Decode base64 model bytes embedded at log time and create an ORT session.
-// This works inside MLflow's sandboxed iframe without any network fetch.
-function modelBytes() {
-  const binary = atob(MODEL_B64);
+// Decode base64 bytes without hitting the call-stack limit on large strings.
+function b64ToBytes(b64) {
+  const binary = atob(b64);
   const bytes  = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+function modelBytes()       { return b64ToBytes(MODEL_B64); }
+function scoredModelBytes() { return b64ToBytes(SCORED_MODEL_B64); }
+
+// Summarise an ORT tensor into a short display string for graph annotation.
+function summarizeTensor(tensor) {
+  if (!tensor) return null;
+  try {
+    const d = tensor.data;
+    if (!d || typeof d.length !== 'number') return null;
+    const vals = Array.from(d).map(v => typeof v === 'bigint' ? Number(v) : v);
+    const n = vals.length;
+    if (n === 0) return null;
+    const shape = tensor.dims && tensor.dims.length ? '[' + tensor.dims.join('\u00d7') + ']' : '';
+    const isFloat = tensor.type === 'float32' || tensor.type === 'float64';
+    if (n === 1) return shape + ' ' + (isFloat ? Number(vals[0]).toFixed(4) : String(vals[0]));
+    if (isFloat) {
+      if (n <= 5) return shape + '\u00a0' + vals.map(v => Number(v).toFixed(3)).join(', ');
+      const maxIdx = vals.reduce((bi, v, i) => v > vals[bi] ? i : bi, 0);
+      return shape + '\u00a0argmax=' + maxIdx + ' (' + Number(vals[maxIdx]).toFixed(3) + ')';
+    }
+    if (n <= 5) return shape + '\u00a0' + vals.join(', ');
+    return shape + '\u00a0' + vals.slice(0, 3).join(', ') + '\u2026';
+  } catch (_) { return null; }
 }
 
 async function init() {
@@ -479,6 +510,14 @@ async function init() {
     renderInfoTable();
     renderInputForm();
     document.getElementById('section-graph').hidden = false;
+    renderOnnxGraph();  // render immediately — INITIAL_TENSOR_VALUES already available
+    // Load scored session (all intermediate outputs exposed) silently in background.
+    try {
+      scoredSession = await ort.InferenceSession.create(scoredModelBytes());
+    } catch (e) {
+      console.warn('[scored session] failed to load:', e.message);
+      statusEl.textContent += '  (graph annotation unavailable: ' + e.message + ')';
+    }
   } catch (err) {
     statusEl.textContent = 'Failed to load model: ' + err.message;
     statusEl.className   = 'error';
@@ -493,8 +532,31 @@ runBtn.addEventListener('click', async () => {
   document.getElementById('section-outputs').hidden = false;
   try {
     // The embedded model has ZipMap removed — all outputs are plain tensors.
-    const results = await session.run(collectFeeds());
+    // Collect feeds twice: ORT Web may dispose tensor data after the first session.run().
+    const feeds       = collectFeeds();
+    const feedsScored = collectFeeds();
+    // Clear old values and capture inputs for graph annotation.
+    tensorValues = {};
+    for (const [name, t] of Object.entries(feeds)) {
+      const s = summarizeTensor(t);
+      if (s) tensorValues[name] = s;
+    }
+    const results = await session.run(feeds);
     showResults(results);
+    // Run scored session to capture intermediate tensor values for graph annotation.
+    if (scoredSession) {
+      try {
+        const scoredResults = await scoredSession.run(feedsScored);
+        for (const [name, t] of Object.entries(scoredResults)) {
+          const s = summarizeTensor(t);
+          if (s) tensorValues[name] = s;
+        }
+      } catch (e) {
+        console.warn('[scored session] inference error:', e.message);
+      }
+    }
+    // Always re-render graph with updated values.
+    renderOnnxGraph();
   } catch (err) {
     outDiv.textContent = 'Error: ' + err.message;
     outDiv.className   = 'error';
@@ -504,7 +566,6 @@ runBtn.addEventListener('click', async () => {
 });
 
 // ─── ONNX Graph Visualisation ────────────────────────────────────────────────────────────────────────────
-let graphRendered = false;
 
 function xmlEsc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -523,22 +584,30 @@ function renderOnnxGraph() {
       return;
     }
 
-    const NW = 120, NH = 36, HG = 24, VG = 54;
+    const NW = 160, NH = 36, HG = 28;
+    const hasTensorVals = Object.keys(tensorValues).length > 0;
+    const hasParams     = opNodes.some(n => n.params  && n.params.length  > 0);
+    const hasWeights    = opNodes.some(n => n.weights && n.weights.length > 0);
+    const maxWeightLines = opNodes.reduce((m, n) => Math.max(m, n.weights ? n.weights.length : 0), 0);
+    const VG = 40
+      + (hasParams   ?  14 : 0)
+      + (hasWeights  ? maxWeightLines * 13 : 0)
+      + (hasTensorVals ? 14 : 0);
     const producer = {}, visNodes = [], edges = [];
 
     INPUTS_META.forEach((m, i) => {
       const id = 'in_' + i;
-      visNodes.push({ id, label: m.name, kind: 'input' });
+      visNodes.push({ id, label: m.name, kind: 'input', outNames: [m.name] });
       producer[m.name] = id;
     });
     opNodes.forEach((n, i) => {
       const id = 'op_' + i;
-      visNodes.push({ id, label: n.opType || '?', sub: n.name, kind: 'op' });
+      visNodes.push({ id, label: n.opType || '?', sub: n.name, kind: 'op', outNames: n.outputs, params: n.params, weights: n.weights });
       n.outputs.forEach(o => { producer[o] = id; });
     });
     OUTPUTS_META.forEach((m, i) => {
       const id = 'out_' + i;
-      visNodes.push({ id, label: m.name, kind: 'output' });
+      visNodes.push({ id, label: m.name, kind: 'output', outNames: [m.name] });
     });
 
     const edgeSet = new Set();
@@ -593,7 +662,8 @@ function renderOnnxGraph() {
       op:     ['#fff3cd', '#e6a817']
     };
 
-    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="display:block">`
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="display:block;background:#fff">`
+      + `<rect width="${svgW}" height="${svgH}" fill="#fff"/>`
       + `<defs><marker id="garr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">`
       + `<polygon points="0 0,8 3,0 6" fill="#bbb"/></marker></defs>`;
 
@@ -610,10 +680,36 @@ function renderOnnxGraph() {
       const lbl = n.label.length > 16 ? n.label.slice(0, 15) + '…' : n.label;
       svg += `<rect x="${n.x}" y="${n.y}" width="${NW}" height="${NH}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
       const ty = n.sub ? n.y + NH/2 - 2 : n.y + NH/2 + 5;
-      svg += `<text x="${n.x + NW/2}" y="${ty}" text-anchor="middle" font-size="12" font-weight="600" font-family="system-ui,sans-serif" fill="#222">${xmlEsc(lbl)}</text>`;
+      const lbl2 = n.label.length > 18 ? n.label.slice(0, 17) + '…' : n.label;
+      svg += `<text x="${n.x + NW/2}" y="${ty}" text-anchor="middle" font-size="12" font-weight="600" font-family="system-ui,sans-serif" fill="#222">${xmlEsc(lbl2)}</text>`;
       if (n.sub) {
-        const sub2 = n.sub.length > 18 ? n.sub.slice(0, 17) + '…' : n.sub;
+        const sub2 = n.sub.length > 20 ? n.sub.slice(0, 19) + '…' : n.sub;
         svg += `<text x="${n.x + NW/2}" y="${n.y + NH - 5}" text-anchor="middle" font-size="9" font-family="system-ui,sans-serif" fill="#777">${xmlEsc(sub2)}</text>`;
+      }
+      let extraY = n.y + NH + 12;
+      // Params summary line — compact stats (gray).
+      if (n.params && n.params.length > 0) {
+        const pFull = n.params.join('\n');
+        const pDisp = pFull.length > 44 ? pFull.slice(0, 43) + '…' : pFull;
+        svg += `<text data-tip="${xmlEsc(pFull)}" x="${n.x + NW/2}" y="${extraY}" text-anchor="middle" font-size="8.5" font-family="monospace,monospace" fill="#888" style="cursor:help">${xmlEsc(pDisp)}</text>`;
+        extraY += 13;
+      }
+      // Weight value lines — tensor parameters / fitted weights (amber).
+      if (n.weights && n.weights.length > 0) {
+        for (const wLine of n.weights) {
+          const wDisp = wLine.length > 30 ? wLine.slice(0, 29) + '…' : wLine;
+          svg += `<text data-tip="${xmlEsc(wLine)}" x="${n.x + NW/2}" y="${extraY}" text-anchor="middle" font-size="8.5" font-family="monospace,monospace" fill="#b45309" style="cursor:help">${xmlEsc(wDisp)}</text>`;
+          extraY += 13;
+        }
+      }
+      // Computed tensor values — shown after inference (blue).
+      if (hasTensorVals && n.outNames) {
+        const summaries = n.outNames.map(o => tensorValues[o]).filter(Boolean);
+        if (summaries.length) {
+          const full = summaries.join('\n');
+          const valStr = full.length > 44 ? full.slice(0, 43) + '…' : full;
+          svg += `<text data-tip="${xmlEsc(full)}" x="${n.x + NW/2}" y="${extraY}" text-anchor="middle" font-size="8.5" font-family="monospace,monospace" fill="#005a9e" style="cursor:help">${xmlEsc(valStr)}</text>`;
+        }
       }
     });
     svg += '</svg>';
@@ -622,16 +718,32 @@ function renderOnnxGraph() {
       + '<span><span style="display:inline-block;width:10px;height:10px;background:#d4edda;border:1px solid #28a745;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Input</span>'
       + '<span><span style="display:inline-block;width:10px;height:10px;background:#fff3cd;border:1px solid #e6a817;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Op</span>'
       + '<span><span style="display:inline-block;width:10px;height:10px;background:#d1ecf1;border:1px solid #17a2b8;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Output</span>'
+      + '<span style="color:#6b7280;font-size:.73rem">&#9474; <span style="color:#bbb">●</span> params &nbsp;<span style="color:#b45309">●</span> weights &nbsp;<span style="color:#005a9e">●</span> values</span>'
       + '</div>';
 
-    container.innerHTML = `<div style="overflow:auto;padding:.3rem">${svg}</div>${legend}`;
+    container.innerHTML = `<div style="overflow:auto;padding:.3rem">${svg}</div>${legend}`
+      + (Object.keys(tensorValues).length > 0 && Object.keys(tensorValues).every(k => tensorValues[k] === (INITIAL_TENSOR_VALUES[k] || ''))
+        ? '<p style="padding:.25rem .8rem;font-size:.78rem;color:#aaa;margin:0">Blue values computed with all-zero inputs. Run Inference to see your values.</p>'
+        : '');
+
+    // Floating tooltip for truncated annotation text.
+    const tip = document.getElementById('svg-tip');
+    container.querySelectorAll('text[data-tip]').forEach(el => {
+      el.addEventListener('mousemove', e => {
+        tip.textContent = el.getAttribute('data-tip');
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX + 14) + 'px';
+        tip.style.top  = (e.clientY + 14) + 'px';
+      });
+      el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    });
   } catch (err) {
     container.innerHTML = `<p style="padding:.8rem;color:#c00;margin:0">Graph render error: ${xmlEsc(err.message)}</p>`;
   }
 }
 
 document.getElementById('graph-details').addEventListener('toggle', function () {
-  if (this.open && !graphRendered) { graphRendered = true; renderOnnxGraph(); }
+  if (this.open) renderOnnxGraph();
 });
 
 init();

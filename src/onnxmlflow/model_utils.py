@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 
 import onnx
+import onnx.shape_inference
 from onnx import TensorProto, helper
 
 
@@ -54,6 +55,44 @@ def make_viewer_model(model: onnx.ModelProto) -> onnx.ModelProto:
     except Exception:
         # If checker fails (e.g. unknown shape), still return the model —
         # ORT Web will validate it at load time.
+        pass
+
+    return model
+
+
+def make_scored_model(model: onnx.ModelProto) -> onnx.ModelProto:
+    """Return a copy of *model* with all intermediate tensors exposed as graph outputs.
+
+    Used by the HTML viewer's scored session to capture per-node activation
+    values during inference and display them on the graph.
+    """
+    model = copy.deepcopy(model)
+
+    # Use shape inference to obtain type/shape info for intermediate tensors.
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model)
+        type_map = {vi.name: vi.type for vi in inferred.graph.value_info}
+    except Exception:
+        type_map = {}
+
+    graph = model.graph
+    declared_outputs = {o.name for o in graph.output}
+    known_initializers = {init.name for init in graph.initializer}
+
+    for node in graph.node:
+        for out_name in node.output:
+            if out_name and out_name not in declared_outputs and out_name not in known_initializers:
+                if out_name not in type_map:
+                    continue  # skip: ORT Web rejects outputs with no type annotation
+                vi = onnx.ValueInfoProto()
+                vi.name = out_name
+                vi.type.CopyFrom(type_map[out_name])
+                graph.output.append(vi)
+                declared_outputs.add(out_name)
+
+    try:
+        onnx.checker.check_model(model)
+    except Exception:
         pass
 
     return model
