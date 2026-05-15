@@ -71,6 +71,12 @@ def generate_viewer_html(
     # Embed the PATCHED model as base64 — no ZipMap, all outputs are plain tensors.
     model_b64 = base64.b64encode(viewer_model.SerializeToString()).decode("ascii")
 
+    # Extract graph nodes for the JS visualisation (no protobuf parsing needed in browser).
+    graph_nodes = [
+        {"opType": n.op_type, "name": n.name, "inputs": list(n.input), "outputs": list(n.output)}
+        for n in viewer_model.graph.node
+    ]
+
     with open(_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
         template = fh.read()
 
@@ -83,4 +89,5 @@ def generate_viewer_html(
         .replace("__MODEL_B64__", model_b64)
         .replace("__INPUTS_META_JSON__", json.dumps(inputs_meta))
         .replace("__OUTPUTS_META_JSON__", json.dumps(outputs_meta))
+        .replace("__GRAPH_NODES_JSON__", json.dumps(graph_nodes))
     )

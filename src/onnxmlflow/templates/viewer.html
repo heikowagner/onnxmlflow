@@ -88,6 +88,29 @@
     .prob-table th { background: #eef4fb; text-align: center; }
     .prob-table td:first-child { text-align: center; font-weight: 600; }
     .prob-bar { display: inline-block; height: .7rem; background: #0078d4; border-radius: 2px; vertical-align: middle; margin-left: .4rem; }
+
+    /* Graph visualisation */
+    #section-graph details { margin: 0; }
+    summary.graph-summary {
+      display: block;
+      font-size: 1.05rem;
+      color: #0078d4;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      margin: 1.4rem 0 .5rem;
+      outline: none;
+    }
+    summary.graph-summary::-webkit-details-marker,
+    summary.graph-summary::marker { display: none; }
+    summary.graph-summary::before {
+      content: '\25B6\00A0';
+      font-size: .75rem;
+      display: inline-block;
+      transition: transform .15s;
+    }
+    details[open] > summary.graph-summary::before { transform: rotate(90deg); }
+    #graph-container { overflow: auto; max-height: 480px; }
   </style>
 </head>
 <body>
@@ -103,6 +126,15 @@
     </thead>
     <tbody id="info-body"></tbody>
   </table>
+</section>
+
+<section id="section-graph" hidden>
+  <details id="graph-details">
+    <summary class="graph-summary">Graph Visualization</summary>
+    <div id="graph-container" style="border:1px solid #ddd;border-radius:6px;background:#fff;margin-top:.4rem;min-height:2.5rem">
+      <p style="padding:.7rem 1rem;color:#888;font-size:.88rem;margin:0">Click to render…</p>
+    </div>
+  </details>
 </section>
 
 <section id="section-inputs" hidden>
@@ -125,6 +157,7 @@ const RUN_ID            = "__RUN_ID__";           // embedded at log time
 const MODEL_B64         = "__MODEL_B64__";        // base64-encoded .onnx bytes
 const INPUTS_META       = __INPUTS_META_JSON__;   // [{name, type, shape}]
 const OUTPUTS_META      = __OUTPUTS_META_JSON__;  // [{name, type, shape}]
+const GRAPH_NODES       = __GRAPH_NODES_JSON__;   // [{opType, name, inputs, outputs}]
 
 // ─── ORT type map (ONNX DataType name → ort.Tensor type string) ───────────────
 const ORT_TYPE = {
@@ -445,6 +478,7 @@ async function init() {
     statusEl.textContent = 'Model loaded. Fill in the inputs below and click Run Inference.';
     renderInfoTable();
     renderInputForm();
+    document.getElementById('section-graph').hidden = false;
   } catch (err) {
     statusEl.textContent = 'Failed to load model: ' + err.message;
     statusEl.className   = 'error';
@@ -467,6 +501,137 @@ runBtn.addEventListener('click', async () => {
   } finally {
     runBtn.disabled = false;
   }
+});
+
+// ─── ONNX Graph Visualisation ────────────────────────────────────────────────────────────────────────────
+let graphRendered = false;
+
+function xmlEsc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderOnnxGraph() {
+  const container = document.getElementById('graph-container');
+  try {
+    const opNodes = GRAPH_NODES;
+    if (!opNodes.length) {
+      container.innerHTML = '<p style="padding:.8rem;color:#888;margin:0">No graph nodes found.</p>';
+      return;
+    }
+    if (opNodes.length > 300) {
+      container.innerHTML = `<p style="padding:.8rem;color:#888;margin:0">Graph has ${opNodes.length} nodes — too large to render inline.</p>`;
+      return;
+    }
+
+    const NW = 120, NH = 36, HG = 24, VG = 54;
+    const producer = {}, visNodes = [], edges = [];
+
+    INPUTS_META.forEach((m, i) => {
+      const id = 'in_' + i;
+      visNodes.push({ id, label: m.name, kind: 'input' });
+      producer[m.name] = id;
+    });
+    opNodes.forEach((n, i) => {
+      const id = 'op_' + i;
+      visNodes.push({ id, label: n.opType || '?', sub: n.name, kind: 'op' });
+      n.outputs.forEach(o => { producer[o] = id; });
+    });
+    OUTPUTS_META.forEach((m, i) => {
+      const id = 'out_' + i;
+      visNodes.push({ id, label: m.name, kind: 'output' });
+    });
+
+    const edgeSet = new Set();
+    opNodes.forEach((n, i) => {
+      n.inputs.forEach(inp => {
+        const src = producer[inp];
+        if (src) {
+          const k = src + '→op_' + i;
+          if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: src, to: 'op_' + i }); }
+        }
+      });
+    });
+    OUTPUTS_META.forEach((m, i) => {
+      const src = producer[m.name];
+      if (src) {
+        const k = src + '→out_' + i;
+        if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: src, to: 'out_' + i }); }
+      }
+    });
+
+    // Compute topological ranks (longest path from sources)
+    const rank = {}, adj = {}, inDeg = {};
+    visNodes.forEach(n => { rank[n.id] = 0; adj[n.id] = []; inDeg[n.id] = 0; });
+    edges.forEach(e => { adj[e.from].push(e.to); inDeg[e.to]++; });
+    const bfsQ = visNodes.filter(n => inDeg[n.id] === 0).map(n => n.id);
+    while (bfsQ.length) {
+      const id = bfsQ.shift();
+      adj[id].forEach(to => {
+        rank[to] = Math.max(rank[to], rank[id] + 1);
+        if (--inDeg[to] === 0) bfsQ.push(to);
+      });
+    }
+
+    // Assign x/y positions by layer
+    const layers = {};
+    visNodes.forEach(n => { const r = rank[n.id]; (layers[r] = layers[r] || []).push(n); });
+    const byId = {}; visNodes.forEach(n => byId[n.id] = n);
+    const sortedR = Object.keys(layers).map(Number).sort((a, b) => a - b);
+    const maxCols = Math.max(...sortedR.map(r => layers[r].length));
+    const svgW = Math.max(400, maxCols * (NW + HG) - HG + 80);
+    sortedR.forEach((r, ri) => {
+      const layer = layers[r];
+      const lw = layer.length * (NW + HG) - HG;
+      const sx = (svgW - lw) / 2;
+      layer.forEach((n, i) => { n.x = sx + i * (NW + HG); n.y = ri * (NH + VG) + 20; });
+    });
+    const svgH = sortedR.length * (NH + VG) + 20;
+
+    const PAL = {
+      input:  ['#d4edda', '#28a745'],
+      output: ['#d1ecf1', '#17a2b8'],
+      op:     ['#fff3cd', '#e6a817']
+    };
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="display:block">`
+      + `<defs><marker id="garr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">`
+      + `<polygon points="0 0,8 3,0 6" fill="#bbb"/></marker></defs>`;
+
+    edges.forEach(e => {
+      const f = byId[e.from], t = byId[e.to];
+      if (!f || !t || f.x == null || t.x == null) return;
+      const x1 = f.x + NW/2, y1 = f.y + NH, x2 = t.x + NW/2, y2 = t.y, my = (y1 + y2) / 2;
+      svg += `<path d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}" fill="none" stroke="#ccc" stroke-width="1.5" marker-end="url(#garr)"/>`;
+    });
+
+    visNodes.forEach(n => {
+      if (n.x == null) return;
+      const [fill, stroke] = PAL[n.kind] || ['#eee', '#999'];
+      const lbl = n.label.length > 16 ? n.label.slice(0, 15) + '…' : n.label;
+      svg += `<rect x="${n.x}" y="${n.y}" width="${NW}" height="${NH}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+      const ty = n.sub ? n.y + NH/2 - 2 : n.y + NH/2 + 5;
+      svg += `<text x="${n.x + NW/2}" y="${ty}" text-anchor="middle" font-size="12" font-weight="600" font-family="system-ui,sans-serif" fill="#222">${xmlEsc(lbl)}</text>`;
+      if (n.sub) {
+        const sub2 = n.sub.length > 18 ? n.sub.slice(0, 17) + '…' : n.sub;
+        svg += `<text x="${n.x + NW/2}" y="${n.y + NH - 5}" text-anchor="middle" font-size="9" font-family="system-ui,sans-serif" fill="#777">${xmlEsc(sub2)}</text>`;
+      }
+    });
+    svg += '</svg>';
+
+    const legend = '<div style="padding:.35rem .8rem;display:flex;gap:1.2rem;font-size:.78rem;color:#555;border-top:1px solid #eee;background:#fafafa;border-radius:0 0 5px 5px">'
+      + '<span><span style="display:inline-block;width:10px;height:10px;background:#d4edda;border:1px solid #28a745;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Input</span>'
+      + '<span><span style="display:inline-block;width:10px;height:10px;background:#fff3cd;border:1px solid #e6a817;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Op</span>'
+      + '<span><span style="display:inline-block;width:10px;height:10px;background:#d1ecf1;border:1px solid #17a2b8;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Output</span>'
+      + '</div>';
+
+    container.innerHTML = `<div style="overflow:auto;padding:.3rem">${svg}</div>${legend}`;
+  } catch (err) {
+    container.innerHTML = `<p style="padding:.8rem;color:#c00;margin:0">Graph render error: ${xmlEsc(err.message)}</p>`;
+  }
+}
+
+document.getElementById('graph-details').addEventListener('toggle', function () {
+  if (this.open && !graphRendered) { graphRendered = true; renderOnnxGraph(); }
 });
 
 init();
