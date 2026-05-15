@@ -121,13 +121,15 @@
 <div id="status">Initialising…</div>
 
 <section id="section-info" hidden>
-  <h2>Model I/O</h2>
-  <table>
-    <thead>
-      <tr><th>Role</th><th>Name</th><th>ONNX Type</th><th>Shape</th></tr>
-    </thead>
-    <tbody id="info-body"></tbody>
-  </table>
+  <details id="io-details">
+    <summary style="cursor:pointer;font-size:1.05rem;font-weight:600;padding:.3rem 0;user-select:none">Model I/O</summary>
+    <table>
+      <thead>
+        <tr><th>Role</th><th>Name</th><th>ONNX Type</th><th>Shape</th></tr>
+      </thead>
+      <tbody id="info-body"></tbody>
+    </table>
+  </details>
 </section>
 
 <section id="section-graph" hidden>
