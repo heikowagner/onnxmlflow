@@ -161,8 +161,6 @@
           <button id="btn-zoom-in"  title="Zoom in">+</button>
           <button id="btn-zoom-out" title="Zoom out">&minus;</button>
           <button id="btn-zoom-reset" title="Reset view">&#8635; Reset</button>
-          <span style="flex:1"></span>
-          <button id="btn-fullscreen" title="Open in new tab">&#x2922; New Tab</button>
         </div>
         <div id="graph-viewport"><div id="svg-wrap"></div></div>
         <div id="graph-legend"></div>
@@ -652,20 +650,6 @@ function _setupGraphInteraction() {
   document.getElementById('btn-zoom-in').addEventListener('click',    () => { _zoom = Math.min(10, _zoom * 1.2); _applyTransform(); });
   document.getElementById('btn-zoom-out').addEventListener('click',   () => { _zoom = Math.max(0.1, _zoom / 1.2); _applyTransform(); });
   document.getElementById('btn-zoom-reset').addEventListener('click', () => { _panX=0; _panY=0; _zoom=1; _applyTransform(); });
-
-  // Open graph in new tab (requestFullscreen blocked in MLflow iframes).
-  const fsBtn = document.getElementById('btn-fullscreen');
-  fsBtn.addEventListener('click', () => {
-    const svgEl = document.querySelector('#svg-wrap svg');
-    if (!svgEl) return;
-    const blob = new Blob(
-      ['<!DOCTYPE html><html><body style="margin:0;background:#fff">', svgEl.outerHTML, '</body></html>'],
-      { type: 'text/html' }
-    );
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  });
 
   // Event delegation for group expand/collapse clicks (avoids re-attaching on every re-render).
   wrap.addEventListener('click', e => {
