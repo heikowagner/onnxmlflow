@@ -1,0 +1,28 @@
+{% set name = "onnxmlflow" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  path: ../
+
+build:
+  noarch: python
+  script: python -m pip install . --no-deps --ignore-installed -vv
+
+dependencies:
+  host:
+    - python >=3.9
+    - pip
+  run:
+    - python >=3.9
+    - mlflow >=2.0
+    - onnx >=1.14
+    - numpy >=1.24
+
+about:
+  home: https://github.com/your-org/onnxmlflow
+  license: MIT
+  summary: MLflow extension that logs ONNX models with an interactive in-browser HTML viewer
