@@ -162,6 +162,7 @@ const MODEL_B64         = "__MODEL_B64__";        // base64-encoded .onnx bytes
 const INPUTS_META       = __INPUTS_META_JSON__;   // [{name, type, shape}]
 const OUTPUTS_META      = __OUTPUTS_META_JSON__;  // [{name, type, shape}]
 const GRAPH_NODES       = __GRAPH_NODES_JSON__;   // [{opType, name, inputs, outputs}]
+const GRAPH_GROUPS      = __GRAPH_GROUPS_JSON__;  // {label: [nodeName|opType, ...]}
 const SCORED_MODEL_B64  = "__SCORED_MODEL_B64__"; // model with all intermediate outputs exposed
 const INITIAL_TENSOR_VALUES = __INITIAL_TENSOR_VALUES_JSON__; // pre-computed with zero input
 
@@ -571,6 +572,9 @@ function xmlEsc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Track which groups are currently expanded (their label strings).
+const expandedGroups = new Set();
+
 function renderOnnxGraph() {
   const container = document.getElementById('graph-container');
   try {
@@ -584,6 +588,38 @@ function renderOnnxGraph() {
       return;
     }
 
+    // ── Build node→group path map (supports nested dicts) ────────────────────
+    // GRAPH_GROUPS: { label: [...] | { label: [...] | {...} } }
+    // nodeToPath[i] = ['TopGroup', 'SubGroup', ...] (full path to deepest group)
+    const nodeToPath = {};
+    (function assignPaths(obj, path) {
+      for (const [label, val] of Object.entries(obj)) {
+        const p = [...path, label];
+        if (Array.isArray(val)) {
+          opNodes.forEach((n, i) => {
+            if (val.includes(n.name) || val.includes(n.opType)) nodeToPath[i] = p;
+          });
+        } else {
+          assignPaths(val, p);
+        }
+      }
+    })(GRAPH_GROUPS, []);
+
+    // For a node at pathArray, return the pathStr of the deepest collapsed ancestor,
+    // or null when all ancestors are expanded (node renders as itself).
+    function visibleGroupPathStr(pathArray) {
+      for (let i = 0; i < pathArray.length; i++) {
+        const ps = pathArray.slice(0, i + 1).join('/');
+        if (!expandedGroups.has(ps)) return ps;
+      }
+      return null;
+    }
+
+    // Count op-node leaves belonging to (or below) a pathStr prefix.
+    function countLeaves(pathStr) {
+      return Object.values(nodeToPath).filter(p => p.join('/').startsWith(pathStr)).length;
+    }
+
     const NW = 160, NH = 36, HG = 28;
     const hasTensorVals = Object.keys(tensorValues).length > 0;
     const hasParams     = opNodes.some(n => n.params  && n.params.length  > 0);
@@ -595,15 +631,70 @@ function renderOnnxGraph() {
       + (hasTensorVals ? 14 : 0);
     const producer = {}, visNodes = [], edges = [];
 
+    // Maps pathStr → visNode id, to avoid duplicate group nodes.
+    const groupNodeAdded = {};
+    // Maps op-node index → the visNode id it was placed into.
+    const nodeVisId = {};
+
     INPUTS_META.forEach((m, i) => {
       const id = 'in_' + i;
       visNodes.push({ id, label: m.name, kind: 'input', outNames: [m.name] });
       producer[m.name] = id;
     });
+
+    // For every currently expanded group, add a persistent header node
+    // that the user can click to collapse the group again.
+    const headerAdded = new Set();
     opNodes.forEach((n, i) => {
-      const id = 'op_' + i;
-      visNodes.push({ id, label: n.opType || '?', sub: n.name, kind: 'op', outNames: n.outputs, params: n.params, weights: n.weights });
-      n.outputs.forEach(o => { producer[o] = id; });
+      const path = nodeToPath[i];
+      if (!path) return;
+      // Walk each prefix that is currently expanded.
+      for (let depth = 1; depth <= path.length; depth++) {
+        const ps = path.slice(0, depth).join('/');
+        if (!expandedGroups.has(ps)) break; // deeper levels are behind a collapsed ancestor
+        if (headerAdded.has(ps)) continue;
+        headerAdded.add(ps);
+        const hid = 'hdr_' + ps.replace(/[^a-zA-Z0-9]/g, '_');
+        const label = ps.split('/').pop();
+        visNodes.push({ id: hid, label, sub: '\u25bc collapse', kind: 'group-header', outNames: [], pathStr: ps });
+      }
+    });
+
+    opNodes.forEach((n, i) => {
+      const path = nodeToPath[i];
+      const gps  = path ? visibleGroupPathStr(path) : null;
+
+      if (gps !== null && gps !== undefined) {
+        // Node is inside a (partially or fully) collapsed group.
+        const safeId = 'grp_' + gps.replace(/[^a-zA-Z0-9]/g, '_');
+        if (!groupNodeAdded[gps]) {
+          groupNodeAdded[gps] = safeId;
+          const label = gps.split('/').pop();
+          const depth = gps.split('/').length;
+          const cnt   = countLeaves(gps);
+          const prefix = '\u25b6\ufe0e '.repeat(depth - 1); // ▶ per nesting level
+          visNodes.push({ id: safeId, label, sub: `${prefix}${cnt} node${cnt===1?'':'s'} — click to expand`, kind: 'group', outNames: [], pathStr: gps });
+        }
+        n.outputs.forEach(o => { producer[o] = safeId; });
+        const gn = visNodes.find(v => v.id === safeId);
+        if (gn) n.outputs.forEach(o => { if (!gn.outNames.includes(o)) gn.outNames.push(o); });
+        nodeVisId[i] = safeId;
+      } else {
+        const id  = 'op_' + i;
+        const grpLabel = path ? path[path.length - 1] : null;
+        const sub = grpLabel ? `[${grpLabel}] ${n.name}` : n.name;
+        // Connect op node back to its group header if the group is expanded.
+        let headerSrc = null;
+        if (path) {
+          for (let d = path.length; d >= 1; d--) {
+            const ps = path.slice(0, d).join('/');
+            if (expandedGroups.has(ps)) { headerSrc = 'hdr_' + ps.replace(/[^a-zA-Z0-9]/g, '_'); break; }
+          }
+        }
+        visNodes.push({ id, label: n.opType || '?', sub, kind: grpLabel ? 'group-member' : 'op', outNames: n.outputs, params: n.params, weights: n.weights, headerSrc });
+        n.outputs.forEach(o => { producer[o] = id; });
+        nodeVisId[i] = id;
+      }
     });
     OUTPUTS_META.forEach((m, i) => {
       const id = 'out_' + i;
@@ -614,11 +705,18 @@ function renderOnnxGraph() {
     opNodes.forEach((n, i) => {
       n.inputs.forEach(inp => {
         const src = producer[inp];
-        if (src) {
-          const k = src + '→op_' + i;
-          if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: src, to: 'op_' + i }); }
+        const dst = nodeVisId[i];
+        if (src && dst && src !== dst) {
+          const k = src + '\u2192' + dst;
+          if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: src, to: dst }); }
         }
       });
+      // Edge from header to first member nodes so header is topologically upstream.
+      const vn = visNodes.find(v => v.id === nodeVisId[i]);
+      if (vn && vn.headerSrc) {
+        const k = vn.headerSrc + '\u2192' + vn.id;
+        if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: vn.headerSrc, to: vn.id }); }
+      }
     });
     OUTPUTS_META.forEach((m, i) => {
       const src = producer[m.name];
@@ -657,9 +755,12 @@ function renderOnnxGraph() {
     const svgH = sortedR.length * (NH + VG) + 20;
 
     const PAL = {
-      input:  ['#d4edda', '#28a745'],
-      output: ['#d1ecf1', '#17a2b8'],
-      op:     ['#fff3cd', '#e6a817']
+      input:          ['#d4edda', '#28a745'],
+      output:         ['#d1ecf1', '#17a2b8'],
+      op:             ['#fff3cd', '#e6a817'],
+      group:          ['#e8e0f8', '#7c3aed'],   // collapsed group — purple
+      'group-member': ['#fdf4ff', '#c084fc'],   // expanded group member — lavender
+      'group-header': ['#ede9fe', '#7c3aed'],   // expanded group header (collapse button)
     };
 
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="display:block;background:#fff">`
@@ -677,15 +778,23 @@ function renderOnnxGraph() {
     visNodes.forEach(n => {
       if (n.x == null) return;
       const [fill, stroke] = PAL[n.kind] || ['#eee', '#999'];
-      const lbl = n.label.length > 16 ? n.label.slice(0, 15) + '…' : n.label;
-      svg += `<rect x="${n.x}" y="${n.y}" width="${NW}" height="${NH}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+      const isGroup   = n.kind === 'group';
+      const isHeader  = n.kind === 'group-header';
+      const clickable = isGroup || isHeader;
+      const cursor    = clickable ? 'cursor:pointer' : '';
+      const grpAttr   = clickable ? ` data-group="${xmlEsc(n.pathStr)}"` : '';
+      // Dashed border for collapsed groups; solid for headers and rest.
+      const dashAttr  = isGroup ? ' stroke-dasharray="5,3"' : '';
+      svg += `<g${grpAttr} style="${cursor}">`;
+      svg += `<rect x="${n.x}" y="${n.y}" width="${NW}" height="${NH}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="1.5"${dashAttr}/>`;
       const ty = n.sub ? n.y + NH/2 - 2 : n.y + NH/2 + 5;
       const lbl2 = n.label.length > 18 ? n.label.slice(0, 17) + '…' : n.label;
-      svg += `<text x="${n.x + NW/2}" y="${ty}" text-anchor="middle" font-size="12" font-weight="600" font-family="system-ui,sans-serif" fill="#222">${xmlEsc(lbl2)}</text>`;
+      svg += `<text x="${n.x + NW/2}" y="${ty}" text-anchor="middle" font-size="12" font-weight="600" font-family="system-ui,sans-serif" fill="${clickable ? '#5b21b6' : '#222'}">${xmlEsc(lbl2)}</text>`;
       if (n.sub) {
-        const sub2 = n.sub.length > 20 ? n.sub.slice(0, 19) + '…' : n.sub;
-        svg += `<text x="${n.x + NW/2}" y="${n.y + NH - 5}" text-anchor="middle" font-size="9" font-family="system-ui,sans-serif" fill="#777">${xmlEsc(sub2)}</text>`;
+        const sub2 = n.sub.length > 26 ? n.sub.slice(0, 25) + '…' : n.sub;
+        svg += `<text x="${n.x + NW/2}" y="${n.y + NH - 5}" text-anchor="middle" font-size="9" font-family="system-ui,sans-serif" fill="${clickable ? '#7c3aed' : '#777'}">${xmlEsc(sub2)}</text>`;
       }
+      svg += `</g>`;
       let extraY = n.y + NH + 12;
       // Params summary line — compact stats (gray).
       if (n.params && n.params.length > 0) {
@@ -714,11 +823,12 @@ function renderOnnxGraph() {
     });
     svg += '</svg>';
 
-    const legend = '<div style="padding:.35rem .8rem;display:flex;gap:1.2rem;font-size:.78rem;color:#555;border-top:1px solid #eee;background:#fafafa;border-radius:0 0 5px 5px">'
+    const legend = '<div style="padding:.35rem .8rem;display:flex;flex-wrap:wrap;gap:1.2rem;font-size:.78rem;color:#555;border-top:1px solid #eee;background:#fafafa;border-radius:0 0 5px 5px">'
       + '<span><span style="display:inline-block;width:10px;height:10px;background:#d4edda;border:1px solid #28a745;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Input</span>'
       + '<span><span style="display:inline-block;width:10px;height:10px;background:#fff3cd;border:1px solid #e6a817;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Op</span>'
       + '<span><span style="display:inline-block;width:10px;height:10px;background:#d1ecf1;border:1px solid #17a2b8;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Output</span>'
-      + '<span style="color:#6b7280;font-size:.73rem">&#9474; <span style="color:#bbb">●</span> params &nbsp;<span style="color:#b45309">●</span> weights &nbsp;<span style="color:#005a9e">●</span> values</span>'
+      + '<span><span style="display:inline-block;width:10px;height:10px;background:#e8e0f8;border:2px dashed #7c3aed;border-radius:2px;margin-right:3px;vertical-align:middle"></span>Group (click to expand)</span>'
+      + '<span style="color:#6b7280;font-size:.73rem">&#9474; <span style="color:#888">●</span> params &nbsp;<span style="color:#b45309">●</span> weights &nbsp;<span style="color:#005a9e">●</span> values</span>'
       + '</div>';
 
     container.innerHTML = `<div style="overflow:auto;padding:.3rem">${svg}</div>${legend}`
@@ -736,6 +846,16 @@ function renderOnnxGraph() {
         tip.style.top  = (e.clientY + 14) + 'px';
       });
       el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    });
+
+    // Click on a collapsed group node → expand it (and vice-versa).
+    container.querySelectorAll('g[data-group]').forEach(el => {
+      el.addEventListener('click', () => {
+        const pathStr = el.getAttribute('data-group');
+        if (expandedGroups.has(pathStr)) expandedGroups.delete(pathStr);
+        else expandedGroups.add(pathStr);
+        renderOnnxGraph();
+      });
     });
   } catch (err) {
     container.innerHTML = `<p style="padding:.8rem;color:#c00;margin:0">Graph render error: ${xmlEsc(err.message)}</p>`;

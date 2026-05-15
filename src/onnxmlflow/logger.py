@@ -15,6 +15,7 @@ def log_model(
     model_path: str,
     artifact_dir: str = "onnx_viewer",
     run_id: Optional[str] = None,
+    groups: Optional[dict] = None,
 ) -> str:
     """Log an ONNX model to MLflow together with an interactive HTML viewer.
 
@@ -27,6 +28,13 @@ def log_model(
         and ``viewer.html`` will be stored.
     run_id:
         Target MLflow run ID.  When *None* the currently active run is used.
+    groups:
+        Optional grouping for the graph visualisation.  A dict mapping a group
+        label to a list of node names **or** op-type strings.  Nodes matching
+        any entry in the list are collapsed into a single expandable group node
+        in the graph.  Example::
+
+            groups={"Preprocessing": ["Normalizer"], "Classifier": ["LinearClassifier", "Softmax"]}
 
     Returns
     -------
@@ -62,6 +70,7 @@ def log_model(
     html_content = generate_viewer_html(
         model, stable_filename, artifact_dir,
         run_id=resolved_run_id,
+        groups=groups or {},
     )
 
     client = mlflow.tracking.MlflowClient()

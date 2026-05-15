@@ -25,7 +25,16 @@ def main() -> None:
         mlflow.set_experiment("onnx-viewer-demo")
 
         with mlflow.start_run() as run:
-            viewer = onnxmlflow.log_model(model_path, artifact_dir="onnx_viewer")
+            viewer = onnxmlflow.log_model(
+                model_path,
+                artifact_dir="onnx_viewer",
+                groups={
+                    "Pipeline": {
+                        "Preprocessing": ["Normalizer", "Identity"],
+                        "Classifier":    ["LinearClassifier", "Cast"],
+                    },
+                },
+            )
             run_id = run.info.run_id
 
         tracking_uri = mlflow.get_tracking_uri()
