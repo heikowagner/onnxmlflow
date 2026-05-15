@@ -29,12 +29,18 @@ def main() -> None:
                 model_path,
                 artifact_dir="onnx_viewer",
                 groups={
+                    # Nodes are matched by name, op type, or output tensor name.
+                    # Output tensor names are the only guaranteed-unique node identifier
+                    # in ONNX — use them when multiple nodes share the same op type
+                    # (e.g. two "Cast" nodes) and you need to target a specific one.
+                    # First match wins, so put more specific patterns earlier.
                     "Pipeline": {
                         "Preprocessing": ["Normalizer*", "*Identity*"],
                         "Classifier":    ["Linear*", "Cast"],
                     },
                 },
                 output_groups={
+                    # Output tensor names are matched with wildcard support.
                     "Predictions": ["label", "probabilities"],
                 },
             )
