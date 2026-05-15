@@ -221,7 +221,7 @@ def generate_viewer_html(
                 arr = init_arrays[inp]
                 if arr.dtype.kind != "f" and arr.dtype.kind != "i":
                     continue
-                params.append(f"{inp}: {init_map[inp]}")
+                # params.append(f"{inp}: {init_map[inp]}")
                 all_floats[inp] = arr.astype(np.float32)
 
         # 2. Significant float-array node attributes.
@@ -240,7 +240,7 @@ def generate_viewer_html(
                 continue  # already in params above; handled below
             if arr.size <= 1:
                 continue
-            params.append(f"{attr_name}{_compact_stats(arr)}")
+            # params.append(f"{attr_name}{_compact_stats(arr)}")
 
         # Infer number of classes / output features from bias-like tensors.
         n_classes = 0
