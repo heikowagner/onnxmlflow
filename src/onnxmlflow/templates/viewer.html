@@ -682,25 +682,23 @@ function renderOnnxGraph() {
       producer[m.name] = id;
     });
 
-    // For every currently expanded group, add a persistent header node
-    // that the user can click to collapse the group again.
+    // Collect metadata for expanded groups — no header nodes added to visNodes;
+    // the bounding box drawn around the members is the clickable collapse target.
+    const opGroupMeta     = {}; // hid → { label, pathStr, isOutput: false }
+    const outputGroupMeta = {}; // hid → { label, pathStr, isOutput: true }
     const headerAdded = new Set();
     opNodes.forEach((n, i) => {
       const path = nodeToPath[i];
       if (!path) return;
-      // Walk each prefix that is currently expanded.
       for (let depth = 1; depth <= path.length; depth++) {
         const ps = path.slice(0, depth).join('/');
-        if (!expandedGroups.has(ps)) break; // deeper levels are behind a collapsed ancestor
+        if (!expandedGroups.has(ps)) break;
         if (headerAdded.has(ps)) continue;
         headerAdded.add(ps);
         const hid = 'hdr_' + ps.replace(/[^a-zA-Z0-9]/g, '_');
-        const label = ps.split('/').pop();
-        visNodes.push({ id: hid, label, sub: '\u25bc collapse', kind: 'group-header', outNames: [], pathStr: ps });
+        opGroupMeta[hid] = { label: ps.split('/').pop(), pathStr: ps, isOutput: false };
       }
-    });  // end op header loop
-
-    // Output group headers — persistent header for each expanded output group.
+    });
     const outputHeaderAdded = new Set();
     OUTPUTS_META.forEach((m, i) => {
       const path = outputToPath[i];
@@ -711,8 +709,7 @@ function renderOnnxGraph() {
         if (outputHeaderAdded.has(ps)) continue;
         outputHeaderAdded.add(ps);
         const hid = 'ohdr_' + ps.replace(/[^a-zA-Z0-9]/g, '_');
-        const label = ps.split('/').pop();
-        visNodes.push({ id: hid, label, sub: '\u25bc collapse', kind: 'output-group-header', outNames: [], pathStr: ps });
+        outputGroupMeta[hid] = { label: ps.split('/').pop(), pathStr: ps, isOutput: true };
       }
     });
 
@@ -794,12 +791,6 @@ function renderOnnxGraph() {
           if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: src, to: dst }); }
         }
       });
-      // Edge from header to first member nodes so header is topologically upstream.
-      const vn = visNodes.find(v => v.id === nodeVisId[i]);
-      if (vn && vn.headerSrc) {
-        const k = vn.headerSrc + '\u2192' + vn.id;
-        if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: vn.headerSrc, to: vn.id }); }
-      }
     });
     OUTPUTS_META.forEach((m, i) => {
       const src = producer[m.name];
@@ -807,12 +798,6 @@ function renderOnnxGraph() {
       if (src && dst && src !== dst) {
         const k = src + '\u2192' + dst;
         if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: src, to: dst }); }
-      }
-      // Edge from output group header to expanded members.
-      const vn = visNodes.find(v => v.id === outVisId[i]);
-      if (vn && vn.headerSrc) {
-        const k = vn.headerSrc + '\u2192' + vn.id;
-        if (!edgeSet.has(k)) { edgeSet.add(k); edges.push({ from: vn.headerSrc, to: vn.id }); }
       }
     });
 
@@ -862,6 +847,8 @@ function renderOnnxGraph() {
       + `<polygon points="0 0,8 3,0 6" fill="#bbb"/></marker></defs>`;
 
     // Draw bounding boxes around all members of each expanded group (rendered behind edges/nodes).
+    // The box itself is the clickable collapse target — no separate header node needed.
+    const groupMeta = { ...opGroupMeta, ...outputGroupMeta };
     const membersByHeader = {};
     visNodes.forEach(n => {
       if (n.headerSrc && n.x != null) {
@@ -870,8 +857,8 @@ function renderOnnxGraph() {
     });
     const BOX_PAD = 14;
     Object.entries(membersByHeader).forEach(([hid, members]) => {
-      const header = byId[hid];
-      if (!header || header.x == null) return;
+      const meta = groupMeta[hid];
+      if (!meta) return;
       const xs = members.map(m => m.x);
       const ys = members.map(m => m.y);
       const bx  = Math.min(...xs) - BOX_PAD;
@@ -879,11 +866,14 @@ function renderOnnxGraph() {
       const bx2 = Math.max(...xs) + NW + BOX_PAD;
       const by2 = Math.max(...ys) + NH + BOX_PAD;
       const bw  = bx2 - bx, bh = by2 - by;
-      const isOut   = hid.startsWith('ohdr_');
+      const isOut   = meta.isOutput;
       const bstroke = isOut ? '#0891b2' : '#7c3aed';
       const bfill   = isOut ? '#f0fdff' : '#faf5ff';
+      const attr    = isOut ? `data-ogroup="${xmlEsc(meta.pathStr)}"` : `data-group="${xmlEsc(meta.pathStr)}"`;
+      svg += `<g ${attr} style="cursor:pointer" title="Click to collapse ${xmlEsc(meta.label)}">`;
       svg += `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="8" fill="${bfill}" fill-opacity="0.6" stroke="${bstroke}" stroke-width="1.5" stroke-dasharray="6,3"/>`;
-      svg += `<text x="${bx + 7}" y="${by - 3}" font-size="10" font-family="system-ui,sans-serif" fill="${bstroke}">${xmlEsc(header.label)}</text>`;
+      svg += `<text x="${bx + bw/2}" y="${by - 4}" text-anchor="middle" font-size="11" font-weight="600" font-family="system-ui,sans-serif" fill="${bstroke}">${xmlEsc(meta.label)} \u25b2</text>`;
+      svg += `</g>`;
     });
 
     edges.forEach(e => {
