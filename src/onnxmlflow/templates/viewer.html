@@ -1057,8 +1057,15 @@ function renderOnnxGraph() {
       }
       svg += `</g>`;
       let extraY = n.y + NH + 12;
-      // Params summary line — compact stats (gray).
-      // Weight value lines — tensor parameters / fitted weights (amber).
+      // Params summary line (gray).
+      if (n.params && n.params.length > 0) {
+        for (const pLine of n.params) {
+          const pDisp = pLine.length > 44 ? pLine.slice(0, 43) + '…' : pLine;
+          svg += `<text data-tip="${xmlEsc(pLine)}" x="${n.x + NW/2}" y="${extraY}" text-anchor="middle" font-size="8.5" font-family="monospace,monospace" fill="#888" style="cursor:help">${xmlEsc(pDisp)}</text>`;
+          extraY += 13;
+        }
+      }
+      // Weight value lines (amber).
       if (n.weights && n.weights.length > 0) {
         for (const wLine of n.weights) {
           const wDisp = wLine.length > 30 ? wLine.slice(0, 29) + '…' : wLine;
