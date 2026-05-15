@@ -601,7 +601,11 @@ function renderOnnxGraph() {
       return re.test(str);
     }
     function nodeMatchesMember(n, member) {
-      return matchesPattern(n.name, member) || matchesPattern(n.opType, member);
+      // Match by node name, op type, or any of its output tensor names.
+      // Output tensor names are the only guaranteed-unique node identifier in ONNX.
+      return matchesPattern(n.name, member)
+          || matchesPattern(n.opType, member)
+          || n.outputs.some(o => matchesPattern(o, member));
     }
 
     const nodeToPath = {};
@@ -610,6 +614,7 @@ function renderOnnxGraph() {
         const p = [...path, label];
         if (Array.isArray(val)) {
           opNodes.forEach((n, i) => {
+            if (nodeToPath[i]) return; // already assigned — first match wins
             if (val.some(m => nodeMatchesMember(n, m))) nodeToPath[i] = p;
           });
         } else {
@@ -640,6 +645,7 @@ function renderOnnxGraph() {
         const p = [...path, label];
         if (Array.isArray(val)) {
           OUTPUTS_META.forEach((m, i) => {
+            if (outputToPath[i]) return; // first match wins
             if (val.some(pat => matchesPattern(m.name, pat))) outputToPath[i] = p;
           });
         } else {
