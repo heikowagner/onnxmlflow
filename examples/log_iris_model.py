@@ -41,7 +41,7 @@ def main() -> None:
                 },
                 output_groups={
                     # Output tensor names are matched with wildcard support.
-                    "Predictions": ["label", "probabilities"],
+                    "Predictions": ["output_label", "output_probability*"],
                 },
             )
             run_id = run.info.run_id
