@@ -591,13 +591,24 @@ function renderOnnxGraph() {
     // ── Build node→group path map (supports nested dicts) ────────────────────
     // GRAPH_GROUPS: { label: [...] | { label: [...] | {...} } }
     // nodeToPath[i] = ['TopGroup', 'SubGroup', ...] (full path to deepest group)
+
+    // Match a string against a pattern where * is a wildcard for any chars.
+    function matchesPattern(str, pattern) {
+      if (!str) return false;
+      const re = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+      return re.test(str);
+    }
+    function nodeMatchesMember(n, member) {
+      return matchesPattern(n.name, member) || matchesPattern(n.opType, member);
+    }
+
     const nodeToPath = {};
     (function assignPaths(obj, path) {
       for (const [label, val] of Object.entries(obj)) {
         const p = [...path, label];
         if (Array.isArray(val)) {
           opNodes.forEach((n, i) => {
-            if (val.includes(n.name) || val.includes(n.opType)) nodeToPath[i] = p;
+            if (val.some(m => nodeMatchesMember(n, m))) nodeToPath[i] = p;
           });
         } else {
           assignPaths(val, p);

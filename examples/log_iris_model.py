@@ -30,8 +30,8 @@ def main() -> None:
                 artifact_dir="onnx_viewer",
                 groups={
                     "Pipeline": {
-                        "Preprocessing": ["Normalizer", "Identity"],
-                        "Classifier":    ["LinearClassifier", "Cast"],
+                        "Preprocessing": ["Normalizer*", "*Identity*"],
+                        "Classifier":    ["Linear*", "Cast"],
                     },
                 },
             )
