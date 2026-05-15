@@ -248,24 +248,13 @@ def generate_viewer_html(
 
         # Infer number of classes / output features from bias-like tensors.
 
-        # Versuche n_classes aus Bias oder heuristisch aus Gewichtsmatrix zu bestimmen
+        # n_classes nur aus Bias-Vektor bestimmen (wie vorher)
         n_classes = 0
         for bias_name in ("intercepts", "intercept", "bias", "B"):
             if bias_name in all_floats:
                 cand = all_floats[bias_name]
                 if cand.ndim == 1:
                     n_classes = int(cand.size)
-                    break
-        # Fallback: Wenn keine Bias gefunden, aber ein 1D-Array mit passender Größe existiert
-        if n_classes == 0:
-            for name, arr in all_floats.items():
-                if arr.ndim == 1 and arr.size > 1 and (name.lower().endswith("coef") or name.lower().endswith("weight")):
-                    # Versuche, eine Matrixform zu raten (z.B. 3x4, 2xN)
-                    for d in range(2, min(10, arr.size)):
-                        if arr.size % d == 0:
-                            n_classes = d
-                            break
-                if n_classes:
                     break
 
         # Format weight lines — works for both attribute floats and initializer matrices.
