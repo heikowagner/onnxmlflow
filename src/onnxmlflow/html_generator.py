@@ -124,7 +124,7 @@ def _format_weights(name: str, arr: np.ndarray, n_classes: int = 0, max_lines: i
         if len(lines) >= max_lines:
             lines.append(f"  \u2026 ({arr.shape[0] - max_lines} more)")
             break
-        if row.size <= 6:
+        if row.size <= 8:
             lines.append(f"{name}[{i}]: [{', '.join(fmt(v) for v in row)}]")
         else:
             lines.append(f"{name}[{i}]: \u03bc={float(row.mean()):.3f} \u03c3={float(row.std()):.3f}")
