@@ -224,23 +224,27 @@ def generate_viewer_html(
                 # params.append(f"{inp}: {init_map[inp]}")
                 all_floats[inp] = arr.astype(np.float32)
 
-        # 2. Significant float-array node attributes.
+
+        # 2. Alle Attribute als params aufnehmen (auch String, Int, Maps, Constant)
         for attr in n.attribute:
             try:
                 if attr.type == AttributeProto.FLOATS and len(attr.floats) > 0:
-                    all_floats[attr.name] = np.array(list(attr.floats), dtype=np.float32)
+                    params.append(f"{attr.name}: [{', '.join(f'{v:.3f}' for v in attr.floats)}]")
+                elif attr.type == AttributeProto.INTS and len(attr.ints) > 0:
+                    params.append(f"{attr.name}: [{', '.join(str(v) for v in attr.ints)}]")
+                elif attr.type == AttributeProto.STRINGS and len(attr.strings) > 0:
+                    params.append(f"{attr.name}: [{', '.join(s.decode('utf-8','replace') for s in attr.strings)}]")
+                elif attr.type == AttributeProto.STRING and attr.s:
+                    params.append(f"{attr.name}: '{attr.s.decode('utf-8','replace')}'")
+                elif attr.type == AttributeProto.INT and attr.i is not None:
+                    params.append(f"{attr.name}: {attr.i}")
+                elif attr.type == AttributeProto.FLOAT and attr.f is not None:
+                    params.append(f"{attr.name}: {attr.f:.3f}")
                 elif attr.type == AttributeProto.TENSOR and attr.t.ByteSize() > 0:
                     t = numpy_helper.to_array(attr.t)
-                    if t.dtype.kind in ("f", "i"):
-                        all_floats[attr.name] = t.astype(np.float32)
+                    params.append(f"{attr.name}: {t.tolist()}")
             except Exception:
                 pass
-        for attr_name, arr in all_floats.items():
-            if attr_name in init_arrays:
-                continue  # already in params above; handled below
-            if arr.size <= 1:
-                continue
-            # params.append(f"{attr_name}{_compact_stats(arr)}")
 
         # Infer number of classes / output features from bias-like tensors.
         n_classes = 0
